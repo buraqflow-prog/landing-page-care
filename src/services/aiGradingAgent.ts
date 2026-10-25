@@ -31,7 +31,7 @@ const CONNECTION_SETTINGS_KEY = "midada-ai-grading-connection";
 
 export const defaultCustomVisionConnection: CustomVisionConnectionSettings = {
   apiToken: "",
-  endpointUrl: "https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent",
+  endpointUrl: "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.0-flash:generateContent",
 };
 
 type CleanImage = {
@@ -52,9 +52,16 @@ export async function imageUrlToCleanBase64(src: string): Promise<CleanImage> {
   if (!source) throw new Error("تعذر قراءة إحدى صور الإجابة");
 
   const dataUrl = source.startsWith("data:") ? source : await loadImageAsDataUrl(source);
-  const match = dataUrl.match(/^data:([^;,]+);base64,([A-Za-z0-9+/=]+)$/i);
-  if (!match) throw new Error("صيغة إحدى صور الإجابة غير مدعومة");
-  return downscaleImage(match[1] ?? "image/jpeg", match[2] ?? "");
+  const commaIndex = dataUrl.indexOf(",");
+  if (commaIndex < 0) throw new Error("صيغة إحدى صور الإجابة غير مدعومة");
+  const header = dataUrl.slice(0, commaIndex);
+  if (!header.startsWith("data:") || !header.toLowerCase().includes(";base64")) {
+    throw new Error("صيغة إحدى صور الإجابة غير مدعومة");
+  }
+  const mimeType = header.slice(5, header.toLowerCase().indexOf(";base64")) || "image/jpeg";
+  const rawBase64 = dataUrl.slice(commaIndex + 1).replace(/\s+/g, "");
+  if (!rawBase64) throw new Error("صيغة إحدى صور الإجابة غير مدعومة");
+  return downscaleImage(mimeType, rawBase64);
 }
 
 async function loadImageAsDataUrl(source: string) {
@@ -81,33 +88,37 @@ async function loadImageAsDataUrl(source: string) {
 }
 
 async function downscaleImage(mimeType: string, base64: string): Promise<CleanImage> {
+  const fallback = { mimeType: "image/jpeg", base64 };
   const image = new Image();
   const dataUrl = `data:${mimeType};base64,${base64}`;
-  await new Promise<void>((resolve, reject) => {
-    const timeout = window.setTimeout(() => reject(new Error("انتهت مهلة تجهيز صورة الإجابة بعد 3 ثوانٍ")), 3_000);
+  const imageLoaded = await new Promise<boolean>((resolve) => {
+    const timeout = window.setTimeout(() => resolve(false), 3_000);
     image.onload = () => {
       window.clearTimeout(timeout);
-      resolve();
+      resolve(true);
     };
     image.onerror = () => {
       window.clearTimeout(timeout);
-      reject(new Error("تعذر تجهيز إحدى صور الإجابة"));
+      resolve(false);
     };
     image.src = dataUrl;
   });
+  if (!imageLoaded) return fallback;
   const longestSide = Math.max(image.naturalWidth, image.naturalHeight);
-  if (!longestSide) throw new Error("تعذر تجهيز إحدى صور الإجابة");
-  const scale = Math.min(1, 800 / longestSide);
-  const canvas = document.createElement("canvas");
-  canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
-  canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
-  const context = canvas.getContext("2d");
-  if (!context) throw new Error("تعذر تجهيز إحدى صور الإجابة");
-  context.drawImage(image, 0, 0, canvas.width, canvas.height);
-  const compressed = canvas.toDataURL("image/jpeg", 0.7);
-  const compressedBase64 = compressed.split(",")[1];
-  if (!compressedBase64) throw new Error("تعذر تجهيز إحدى صور الإجابة");
-  return { mimeType: "image/jpeg", base64: compressedBase64 };
+  if (!longestSide) return fallback;
+  try {
+    const scale = Math.min(1, 800 / longestSide);
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
+    canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
+    const context = canvas.getContext("2d");
+    if (!context) return fallback;
+    context.drawImage(image, 0, 0, canvas.width, canvas.height);
+    const compressedBase64 = canvas.toDataURL("image/jpeg", 0.7).split(",")[1];
+    return compressedBase64 ? { mimeType: "image/jpeg", base64: compressedBase64 } : fallback;
+  } catch {
+    return fallback;
+  }
 }
 
 function isGoogleGenerateContentEndpoint(endpointUrl: string) {
@@ -117,10 +128,15 @@ function isGoogleGenerateContentEndpoint(endpointUrl: string) {
 
 function preferredFlashModel(models: Array<{ name?: string; supportedGenerationMethods?: string[] }>) {
   const availableModels = models
-    .filter((model) => model.name?.startsWith("models/") && model.name.toLowerCase().includes("flash") && (!model.supportedGenerationMethods || model.supportedGenerationMethods.includes("generateContent")))
+    .filter((model) => model.name?.startsWith("models/") && model.name.toLowerCase().includes("flash") && !model.name.includes("2.5") && (!model.supportedGenerationMethods || model.supportedGenerationMethods.includes("generateContent")))
     .map((model) => model.name?.replace(/^models\//, "") ?? "");
   return availableModels.sort((left, right) => {
-    const rank = (model: string) => model === "gemini-flash-latest" ? 0 : model.includes("latest") ? 1 : 2;
+    const rank = (model: string) => {
+      if (model.includes("gemini-3")) return 0;
+      if (model.includes("gemini-2.0-flash")) return 1;
+      if (model === "gemini-flash-latest") return 3;
+      return 2;
+    };
     return rank(left) - rank(right) || right.localeCompare(left, undefined, { numeric: true });
   })[0];
 }
@@ -128,6 +144,8 @@ function preferredFlashModel(models: Array<{ name?: string; supportedGenerationM
 /** Finds an active Gemini Flash model quickly, while preserving configured non-Google endpoints. */
 export async function resolveVisionEndpoint(endpointUrl: string, apiToken: string): Promise<string> {
   if (!isGoogleGenerateContentEndpoint(endpointUrl)) return endpointUrl;
+  const configuredModel = new URL(endpointUrl).pathname.split("/").pop()?.replace(":generateContent", "")?.toLowerCase() ?? "";
+  if (!configuredModel.includes("gemini-flash-latest") && !configuredModel.includes("gemini-2.5-flash")) return endpointUrl;
 
   const parsed = new URL(endpointUrl);
   const fallback = new URL(defaultCustomVisionConnection.endpointUrl);
@@ -182,20 +200,50 @@ function getEndpointUrl(endpointUrl: string, apiToken: string) {
 const gradingPrompt = (exerciseTitle: string) => `أنت أستاذ خبير ومصحح أكاديمي دقيق. صحّح حل الطالب في تمرين "${exerciseTitle}" من الصور المرفقة. حل الأسئلة علمياً أولاً ثم قارن الحل خطوة بخطوة. أرجع JSON صالحاً فقط بلا أي نص إضافي بهذا الشكل:
 {"score":15,"summary":"...","stepByStepCorrection":[{"title":"السؤال 1","result":"correct أو needs-review أو incorrect","note":"..."}],"studentFeedback":"..."}`;
 
-function parseGradeResult(raw: unknown): AIGradeResult {
+export function parseGradeResult(raw: unknown): AIGradeResult {
   if (!raw || typeof raw !== "object") throw new Error("استجابة وكيل التصحيح غير مكتملة");
   const result = raw as Partial<AIGradeResult>;
-  const score = result.score ?? Number.NaN;
+  const score = Math.min(20, Math.max(0, Number(result.score) || 0));
   const summary = result.summary;
   const steps = result.stepByStepCorrection;
   const studentFeedback = result.studentFeedback;
-  if (!Number.isFinite(score) || typeof summary !== "string" || !Array.isArray(steps) || typeof studentFeedback !== "string") {
+  if (typeof summary !== "string" || !Array.isArray(steps) || typeof studentFeedback !== "string") {
     throw new Error("استجابة وكيل التصحيح غير مكتملة");
   }
-  if (score < 0 || score > 20 || !summary.trim() || !studentFeedback.trim() || steps.some((step) => !step || typeof step.title !== "string" || typeof step.note !== "string" || !["correct", "needs-review", "incorrect"].includes(step.result))) {
+  if (!summary.trim() || !studentFeedback.trim() || steps.some((step) => !step || typeof step.title !== "string" || typeof step.note !== "string")) {
     throw new Error("تقرير التصحيح غير صالح");
   }
-  return { score, summary, stepByStepCorrection: steps, studentFeedback };
+  const stepByStepCorrection = steps.map((step) => {
+    const value = String(step.result ?? "").toLowerCase();
+    const normalizedResult = value.includes("incorrect") || value.includes("wrong") || value.includes("خطأ")
+      ? "incorrect"
+      : value.includes("correct") || value.includes("صحيح")
+        ? "correct"
+        : "needs-review";
+    return { title: step.title, note: step.note, result: normalizedResult };
+  }) as GradingStep[];
+  return { score, summary, stepByStepCorrection, studentFeedback };
+}
+
+function extractJsonObject(text: string) {
+  const start = text.indexOf("{");
+  if (start < 0) return null;
+  let depth = 0;
+  let quoted = false;
+  let escaped = false;
+  for (let index = start; index < text.length; index += 1) {
+    const character = text[index];
+    if (quoted) {
+      if (escaped) escaped = false;
+      else if (character === "\\") escaped = true;
+      else if (character === '"') quoted = false;
+      continue;
+    }
+    if (character === '"') quoted = true;
+    else if (character === "{") depth += 1;
+    else if (character === "}" && --depth === 0) return text.slice(start, index + 1);
+  }
+  return null;
 }
 
 async function responseError(response: Response) {
@@ -248,8 +296,8 @@ export async function gradeSubmissionWithAI(input: GradeSubmissionInput, connect
           ],
         }],
         generationConfig: {
-          temperature: 0.2,
-          maxOutputTokens: 1024,
+          temperature: 0.1,
+          maxOutputTokens: 4096,
           responseMimeType: "application/json",
         },
       }),
@@ -272,7 +320,7 @@ export async function gradeSubmissionWithAI(input: GradeSubmissionInput, connect
 
   const payload = await response.json() as { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> };
   const text = payload.candidates?.[0]?.content?.parts?.map((part) => part.text ?? "").join("\n") ?? "";
-  const json = text.match(/\{[\s\S]*\}/)?.[0];
+  const json = extractJsonObject(text);
   if (!json) throw new Error("لم يُرجع الوكيل تقرير تصحيح صالحاً");
   try {
     const result = parseGradeResult(JSON.parse(json));

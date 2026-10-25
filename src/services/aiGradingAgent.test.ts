@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { gradeSubmissionWithAI, imageUrlToCleanBase64, resolveVisionEndpoint } from "./aiGradingAgent";
+import { gradeSubmissionWithAI, imageUrlToCleanBase64, parseGradeResult, resolveVisionEndpoint } from "./aiGradingAgent";
 
 describe("gradeSubmissionWithAI", () => {
   beforeEach(() => {
@@ -45,13 +45,35 @@ describe("gradeSubmissionWithAI", () => {
     })).rejects.toThrow("HTTP 401 — Unauthorized");
   });
 
-  it("uses the available Flash model returned by Gemini", async () => {
+  it("keeps a teacher-selected numbered Flash model without discovery", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(resolveVisionEndpoint("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.0-flash:generateContent", "teacher-token"))
+      .resolves.toBe("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.0-flash:generateContent");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("prefers Gemini 3 and excludes Gemini 2.5 during auto-discovery", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({
-      models: [{ name: "models/gemini-3.0-flash", supportedGenerationMethods: ["generateContent"] }],
+      models: [
+        { name: "models/gemini-2.5-flash", supportedGenerationMethods: ["generateContent"] },
+        { name: "models/gemini-2.0-flash", supportedGenerationMethods: ["generateContent"] },
+        { name: "models/gemini-3.0-flash", supportedGenerationMethods: ["generateContent"] },
+      ],
     }), { status: 200, headers: { "content-type": "application/json" } })));
 
-    await expect(resolveVisionEndpoint("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent", "teacher-token"))
+    await expect(resolveVisionEndpoint("https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent", "teacher-token"))
       .resolves.toBe("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.0-flash:generateContent");
+  });
+
+  it("clamps scores and normalizes flexible step results", () => {
+    expect(parseGradeResult({
+      score: 28,
+      summary: "مراجعة مكتملة",
+      stepByStepCorrection: [{ title: "السؤال 1", result: "خطأ في الحل", note: "راجِع الإشارة" }],
+      studentFeedback: "أعد المحاولة.",
+    })).toMatchObject({ score: 20, stepByStepCorrection: [{ result: "incorrect" }] });
   });
 
   it("stops a stalled model request after 60 seconds", async () => {
