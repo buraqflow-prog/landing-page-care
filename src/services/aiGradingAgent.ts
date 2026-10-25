@@ -34,6 +34,13 @@ type CleanImage = {
   mimeType: string;
 };
 
+const MODEL_DISCOVERY_TIMEOUT_MS = 5_000;
+const GENERATE_CONTENT_TIMEOUT_MS = 12_000;
+
+function abortAfter(controller: AbortController, duration: number) {
+  return window.setTimeout(() => controller.abort(), duration);
+}
+
 /** Converts browser image URLs into validated data URLs before secure grading. */
 export async function imageUrlToCleanBase64(src: string): Promise<CleanImage> {
   const source = src.trim();
@@ -49,7 +56,7 @@ export async function imageUrlToCleanBase64(src: string): Promise<CleanImage> {
   }
 
   const controller = new AbortController();
-  const timeout = window.setTimeout(() => controller.abort(), 3_000);
+  const timeout = abortAfter(controller, 3_000);
   let response: Response;
   try {
     response = await fetch(source, { signal: controller.signal });
@@ -96,7 +103,7 @@ export async function resolveVisionEndpoint(endpointUrl: string, apiToken: strin
   const parsed = new URL(endpointUrl);
   const fallback = new URL(defaultCustomVisionConnection.endpointUrl);
   const controller = new AbortController();
-  const timeout = window.setTimeout(() => controller.abort(), 5_000);
+  const timeout = abortAfter(controller, MODEL_DISCOVERY_TIMEOUT_MS);
   try {
     const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(apiToken.trim())}`, { signal: controller.signal, credentials: "omit" });
     if (!response.ok) return fallback.toString();
@@ -189,30 +196,30 @@ export async function gradeSubmissionWithAI(input: GradeSubmissionInput, connect
 
   const cleanImages = await Promise.all(input.studentImagesBase64.map(imageUrlToCleanBase64));
   const controller = new AbortController();
-  const timeout = window.setTimeout(() => controller.abort(), 45_000);
   let response: Response;
   try {
     const selectedEndpoint = await resolveVisionEndpoint(connection.endpointUrl, connection.apiToken);
+    const controller = new AbortController();
+    const timeout = abortAfter(controller, GENERATE_CONTENT_TIMEOUT_MS);
     response = await fetch(getEndpointUrl(selectedEndpoint, connection.apiToken), {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    credentials: "omit",
-    signal: controller.signal,
-    body: JSON.stringify({
-      contents: [{
-        role: "user",
-        parts: [
-          { text: gradingPrompt(input.exerciseTitle) },
-          ...cleanImages.map((image) => ({ inlineData: { mimeType: image.mimeType, data: image.base64 } })),
-        ],
-      }],
-    }),
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "omit",
+      signal: controller.signal,
+      body: JSON.stringify({
+        contents: [{
+          role: "user",
+          parts: [
+            { text: gradingPrompt(input.exerciseTitle) },
+            ...cleanImages.map((image) => ({ inlineData: { mimeType: image.mimeType, data: image.base64 } })),
+          ],
+        }],
+      }),
     });
-  } catch (error) {
-    if (error instanceof DOMException && error.name === "AbortError") throw new Error("انتهت مهلة الاتصال بالوكيل بعد 45 ثانية");
-    throw new Error("تعذر الاتصال بالوكيل. تحقق من الرابط ومن سماح خدمة الوكيل بالاتصال من المتصفح");
-  } finally {
     window.clearTimeout(timeout);
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") throw new Error("تعذر الحصول على رد من وكيل التصحيح خلال 12 ثانية. تحقق من رمز API ومن أن خدمة Gemini تسمح بالاتصال من المتصفح");
+    throw new Error("تعذر الاتصال بالوكيل. تحقق من الرابط ومن سماح خدمة الوكيل بالاتصال من المتصفح");
   }
 
   if (!response.ok) {

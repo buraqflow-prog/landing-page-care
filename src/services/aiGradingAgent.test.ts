@@ -34,4 +34,24 @@ describe("gradeSubmissionWithAI", () => {
     await expect(resolveVisionEndpoint("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent", "teacher-token"))
       .resolves.toBe("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.0-flash:generateContent");
   });
+
+  it("stops a stalled model request after 12 seconds", async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal("fetch", vi.fn().mockImplementation((_url, init) => new Promise((_resolve, reject) => {
+      const signal = (init as RequestInit).signal;
+      signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")));
+    })));
+
+    const grading = gradeSubmissionWithAI({
+      exerciseTitle: "قوانين نيوتن",
+      studentImagesBase64: ["data:image/jpeg;base64,QQ=="],
+    }, {
+      apiToken: "teacher-token",
+      endpointUrl: "https://vision.example.test/grade",
+    });
+    await vi.advanceTimersByTimeAsync(12_000);
+
+    await expect(grading).rejects.toThrow("خلال 12 ثانية");
+    vi.useRealTimers();
+  });
 });
