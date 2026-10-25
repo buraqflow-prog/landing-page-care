@@ -29,7 +29,7 @@ async function prepareAnswerSheet(files: FileList | File[]) {
   const imageFiles = selectedFiles.filter((file) => file.type.startsWith("image/"));
   if (imageFiles.length) {
     return Promise.all(imageFiles.map((file) =>
-      return new Promise<string>((resolve, reject) => {
+      new Promise<string>((resolve, reject) => {
         const reader = new FileReader();
         reader.onload = () => resolve(String(reader.result));
         reader.onerror = () => reject(new Error("تعذر قراءة صورة الإجابة"));
