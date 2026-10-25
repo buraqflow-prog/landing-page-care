@@ -197,10 +197,11 @@ export async function gradeSubmissionWithAI(input: GradeSubmissionInput, connect
   const cleanImages = await Promise.all(input.studentImagesBase64.map(imageUrlToCleanBase64));
   const controller = new AbortController();
   let response: Response;
+  let timeout: number | undefined;
   try {
     const selectedEndpoint = await resolveVisionEndpoint(connection.endpointUrl, connection.apiToken);
     const controller = new AbortController();
-    const timeout = abortAfter(controller, GENERATE_CONTENT_TIMEOUT_MS);
+    timeout = abortAfter(controller, GENERATE_CONTENT_TIMEOUT_MS);
     response = await fetch(getEndpointUrl(selectedEndpoint, connection.apiToken), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -216,10 +217,11 @@ export async function gradeSubmissionWithAI(input: GradeSubmissionInput, connect
         }],
       }),
     });
-    window.clearTimeout(timeout);
   } catch (error) {
     if (error instanceof DOMException && error.name === "AbortError") throw new Error("تعذر الحصول على رد من وكيل التصحيح خلال 12 ثانية. تحقق من رمز API ومن أن خدمة Gemini تسمح بالاتصال من المتصفح");
     throw new Error("تعذر الاتصال بالوكيل. تحقق من الرابط ومن سماح خدمة الوكيل بالاتصال من المتصفح");
+  } finally {
+    if (timeout !== undefined) window.clearTimeout(timeout);
   }
 
   if (!response.ok) {

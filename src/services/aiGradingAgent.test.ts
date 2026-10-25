@@ -49,9 +49,10 @@ describe("gradeSubmissionWithAI", () => {
       apiToken: "teacher-token",
       endpointUrl: "https://vision.example.test/grade",
     });
+    const assertion = expect(grading).rejects.toThrow("خلال 12 ثانية");
     await vi.advanceTimersByTimeAsync(12_000);
 
-    await expect(grading).rejects.toThrow("خلال 12 ثانية");
+    await assertion;
     vi.useRealTimers();
   });
 });
