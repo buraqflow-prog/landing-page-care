@@ -122,6 +122,11 @@ async function responseError(response: Response) {
   }
 }
 
+function formatHttpDiagnostic(response: Response, details: string) {
+  const statusText = response.statusText.trim() || "بدون وصف للحالة";
+  return `HTTP ${response.status} — ${statusText}${details ? `\n${details}` : ""}`;
+}
+
 /** Calls a teacher-configured vision endpoint with session-only browser settings. */
 export async function gradeSubmissionWithAI(input: GradeSubmissionInput, connection: CustomVisionConnectionSettings): Promise<AIGradeResult> {
   if (!input.studentImagesBase64.length) {
@@ -160,7 +165,7 @@ export async function gradeSubmissionWithAI(input: GradeSubmissionInput, connect
 
   if (!response.ok) {
     const details = await responseError(response);
-    throw new Error(`فشل الاتصال بالوكيل: HTTP ${response.status} ${response.statusText || ""}${details ? ` — ${details}` : ""}`.trim());
+    throw new Error(`فشل الاتصال بالوكيل:\n${formatHttpDiagnostic(response, details)}`);
   }
 
   if (!response.headers.get("content-type")?.includes("application/json")) {
