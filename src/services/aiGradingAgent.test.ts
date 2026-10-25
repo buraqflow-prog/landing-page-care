@@ -1,8 +1,35 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { gradeSubmissionWithAI, imageUrlToCleanBase64, resolveVisionEndpoint } from "./aiGradingAgent";
 
 describe("gradeSubmissionWithAI", () => {
+  beforeEach(() => {
+    vi.stubGlobal("Image", class {
+      naturalWidth = 1;
+      naturalHeight = 1;
+      onload: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      set src(_value: string) { queueMicrotask(() => this.onload?.()); }
+    });
+    vi.spyOn(document, "createElement").mockImplementation((tagName: string) => {
+      if (tagName === "canvas") {
+        return {
+          width: 0,
+          height: 0,
+          getContext: () => ({ drawImage: vi.fn() }),
+          toDataURL: () => "data:image/jpeg;base64,QQ==",
+        } as unknown as HTMLCanvasElement;
+      }
+      return document.createElement(tagName);
+    });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
   it("reports the HTTP status and status text from a custom vision endpoint", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("Invalid API key", {
       status: 401,
@@ -42,9 +69,9 @@ describe("gradeSubmissionWithAI", () => {
       endpointUrl: "https://vision.example.test/grade",
     });
     const assertion = expect(grading).rejects.toThrow("خلال 60 ثانية");
+    await vi.runAllTicks();
     await vi.advanceTimersByTimeAsync(60_000);
 
     await assertion;
-    vi.useRealTimers();
   });
 });

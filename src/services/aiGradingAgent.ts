@@ -84,8 +84,15 @@ async function downscaleImage(mimeType: string, base64: string): Promise<CleanIm
   const image = new Image();
   const dataUrl = `data:${mimeType};base64,${base64}`;
   await new Promise<void>((resolve, reject) => {
-    image.onload = () => resolve();
-    image.onerror = () => reject(new Error("تعذر تجهيز إحدى صور الإجابة"));
+    const timeout = window.setTimeout(() => reject(new Error("انتهت مهلة تجهيز صورة الإجابة بعد 3 ثوانٍ")), 3_000);
+    image.onload = () => {
+      window.clearTimeout(timeout);
+      resolve();
+    };
+    image.onerror = () => {
+      window.clearTimeout(timeout);
+      reject(new Error("تعذر تجهيز إحدى صور الإجابة"));
+    };
     image.src = dataUrl;
   });
   const longestSide = Math.max(image.naturalWidth, image.naturalHeight);
