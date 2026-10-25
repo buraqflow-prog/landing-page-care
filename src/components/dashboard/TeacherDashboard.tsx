@@ -19,6 +19,34 @@ const initialSubmissions: Submission[] = [
   { id: "3", student: "ياسين عمر", status: "بانتظار التصحيح", fileName: "Quiz1_Physics_Yassine.pdf", exerciseTitle: "تمرين: قوانين نيوتن" },
 ];
 
+function createSampleAnswerSheet() {
+  const canvas = document.createElement("canvas");
+  canvas.width = 1200;
+  canvas.height = 1550;
+  const context = canvas.getContext("2d");
+  if (!context) return null;
+  context.fillStyle = "#ffffff";
+  context.fillRect(0, 0, canvas.width, canvas.height);
+  context.fillStyle = "#172033";
+  context.direction = "rtl";
+  context.textAlign = "right";
+  context.font = "bold 54px Arial";
+  context.fillText("كريم بنعلي - الفرض 1", 1080, 120);
+  context.font = "38px Arial";
+  [
+    "1) حل المعادلة: 2x + 6 = 14",
+    "2x = 8  ⟹  x = 4",
+    "2) حساب المشتقة: f(x) = x² + 3x",
+    "f'(x) = 2x + 3",
+    "3) مستطيل طوله 8 سم وعرضه 5 سم",
+    "المساحة = 40 سم²    المحيط = 26 سم",
+  ].forEach((line, index) => context.fillText(line, 1080, 280 + index * 180));
+  context.strokeStyle = "#94a3b8";
+  context.lineWidth = 3;
+  context.strokeRect(90, 190, 1020, 1120);
+  return canvas.toDataURL("image/jpeg", 0.85);
+}
+
 function loadLatestSubmission() {
   try { return JSON.parse(window.localStorage.getItem("midada-latest-submission") ?? "null") as Submission | null; } catch { return null; }
 }
@@ -59,6 +87,11 @@ export function TeacherDashboard({ onStartClass }: { onStartClass: () => void })
   const [quickExerciseTitle, setQuickExerciseTitle] = useState("تمرين: قوانين نيوتن");
   const [quickStudentName, setQuickStudentName] = useState("كريم علي");
   const [isPreparingAnswerSheet, setIsPreparingAnswerSheet] = useState(false);
+
+  useEffect(() => {
+    const image = createSampleAnswerSheet();
+    if (image) setSubmissions((current) => current.map((submission) => submission.id === "1" ? { ...submission, images: [image] } : submission));
+  }, []);
 
   useEffect(() => {
     const syncSubmission = () => {
