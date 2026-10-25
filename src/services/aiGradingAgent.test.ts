@@ -18,14 +18,6 @@ describe("gradeSubmissionWithAI", () => {
     })).rejects.toThrow("HTTP 401 — Unauthorized");
   });
 
-  it("reads a data URL without requesting the preview image", async () => {
-    const fetchMock = vi.fn();
-    vi.stubGlobal("fetch", fetchMock);
-
-    await expect(imageUrlToCleanBase64("data:image/jpeg;base64,QQ==")).resolves.toEqual({ mimeType: "image/jpeg", base64: "QQ==" });
-    expect(fetchMock).not.toHaveBeenCalled();
-  });
-
   it("uses the available Flash model returned by Gemini", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({
       models: [{ name: "models/gemini-3.0-flash", supportedGenerationMethods: ["generateContent"] }],
@@ -35,7 +27,7 @@ describe("gradeSubmissionWithAI", () => {
       .resolves.toBe("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.0-flash:generateContent");
   });
 
-  it("stops a stalled model request after 12 seconds", async () => {
+  it("stops a stalled model request after 60 seconds", async () => {
     vi.useFakeTimers();
     vi.stubGlobal("fetch", vi.fn().mockImplementation((_url, init) => new Promise((_resolve, reject) => {
       const signal = (init as RequestInit).signal;
@@ -49,8 +41,8 @@ describe("gradeSubmissionWithAI", () => {
       apiToken: "teacher-token",
       endpointUrl: "https://vision.example.test/grade",
     });
-    const assertion = expect(grading).rejects.toThrow("خلال 12 ثانية");
-    await vi.advanceTimersByTimeAsync(12_000);
+    const assertion = expect(grading).rejects.toThrow("خلال 60 ثانية");
+    await vi.advanceTimersByTimeAsync(60_000);
 
     await assertion;
     vi.useRealTimers();
