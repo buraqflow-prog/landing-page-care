@@ -26,7 +26,7 @@ const CONNECTION_SETTINGS_KEY = "midada-ai-grading-connection";
 
 export const defaultCustomVisionConnection: CustomVisionConnectionSettings = {
   apiToken: "",
-  endpointUrl: "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent",
+  endpointUrl: "https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent",
 };
 
 type CleanImage = {
@@ -40,12 +40,25 @@ export async function imageUrlToCleanBase64(src: string): Promise<CleanImage> {
   if (!source) throw new Error("تعذر قراءة إحدى صور الإجابة");
 
   if (source.startsWith("data:")) {
-    const match = source.match(/^data:([^;,]+);base64,([A-Za-z0-9+/=]+)$/i);
-    if (!match) throw new Error("صيغة إحدى صور الإجابة غير مدعومة");
-    return { mimeType: match[1] ?? "image/jpeg", base64: match[2] ?? "" };
+    const separatorIndex = source.indexOf(",");
+    const header = source.slice(0, separatorIndex);
+    const base64 = source.slice(separatorIndex + 1);
+    const mimeType = header.match(/^data:([^;,]+);base64$/i)?.[1];
+    if (separatorIndex < 0 || !mimeType || !/^[A-Za-z0-9+/=]+$/.test(base64)) throw new Error("صيغة إحدى صور الإجابة غير مدعومة");
+    return { mimeType, base64 };
   }
 
-  const response = await fetch(source);
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), 3_000);
+  let response: Response;
+  try {
+    response = await fetch(source, { signal: controller.signal });
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") throw new Error("انتهت مهلة قراءة صورة الإجابة بعد 3 ثوانٍ");
+    throw new Error("تعذر تحميل إحدى صور الإجابة");
+  } finally {
+    window.clearTimeout(timeout);
+  }
   if (!response.ok) throw new Error("تعذر تحميل إحدى صور الإجابة");
   const blob = await response.blob();
   if (!blob.type.startsWith("image/")) throw new Error("الملف المرفوع ليس صورة صالحة للتصحيح");
@@ -59,6 +72,44 @@ export async function imageUrlToCleanBase64(src: string): Promise<CleanImage> {
   const match = dataUrl.match(/^data:([^;,]+);base64,([A-Za-z0-9+/=]+)$/i);
   if (!match) throw new Error("تعذر تجهيز إحدى صور الإجابة");
   return { mimeType: match[1] ?? "image/jpeg", base64: match[2] ?? "" };
+}
+
+function isGoogleGenerateContentEndpoint(endpointUrl: string) {
+  const parsed = new URL(endpointUrl);
+  return parsed.hostname === "generativelanguage.googleapis.com" && /^\/v1beta\/models\/[^/]+:generateContent$/.test(parsed.pathname);
+}
+
+function preferredFlashModel(models: Array<{ name?: string; supportedGenerationMethods?: string[] }>) {
+  const availableModels = models
+    .filter((model) => model.name?.startsWith("models/") && model.name.toLowerCase().includes("flash") && (!model.supportedGenerationMethods || model.supportedGenerationMethods.includes("generateContent")))
+    .map((model) => model.name?.replace(/^models\//, "") ?? "");
+  return availableModels.sort((left, right) => {
+    const rank = (model: string) => model === "gemini-flash-latest" ? 0 : model.includes("latest") ? 1 : 2;
+    return rank(left) - rank(right) || right.localeCompare(left, undefined, { numeric: true });
+  })[0];
+}
+
+/** Finds an active Gemini Flash model quickly, while preserving configured non-Google endpoints. */
+export async function resolveVisionEndpoint(endpointUrl: string, apiToken: string): Promise<string> {
+  if (!isGoogleGenerateContentEndpoint(endpointUrl)) return endpointUrl;
+
+  const parsed = new URL(endpointUrl);
+  const fallback = new URL(defaultCustomVisionConnection.endpointUrl);
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), 5_000);
+  try {
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(apiToken.trim())}`, { signal: controller.signal, credentials: "omit" });
+    if (!response.ok) return fallback.toString();
+    const payload = await response.json() as { models?: Array<{ name?: string; supportedGenerationMethods?: string[] }> };
+    const model = preferredFlashModel(payload.models ?? []);
+    if (!model) return fallback.toString();
+    parsed.pathname = `/v1beta/models/${model}:generateContent`;
+    return parsed.toString();
+  } catch {
+    return fallback.toString();
+  } finally {
+    window.clearTimeout(timeout);
+  }
 }
 
 export function loadCustomVisionConnection(): CustomVisionConnectionSettings {
@@ -141,7 +192,8 @@ export async function gradeSubmissionWithAI(input: GradeSubmissionInput, connect
   const timeout = window.setTimeout(() => controller.abort(), 45_000);
   let response: Response;
   try {
-    response = await fetch(getEndpointUrl(connection.endpointUrl, connection.apiToken), {
+    const selectedEndpoint = await resolveVisionEndpoint(connection.endpointUrl, connection.apiToken);
+    response = await fetch(getEndpointUrl(selectedEndpoint, connection.apiToken), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     credentials: "omit",

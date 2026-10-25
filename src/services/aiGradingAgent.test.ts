@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { gradeSubmissionWithAI } from "./aiGradingAgent";
+import { gradeSubmissionWithAI, imageUrlToCleanBase64, resolveVisionEndpoint } from "./aiGradingAgent";
 
 describe("gradeSubmissionWithAI", () => {
   it("reports the HTTP status and status text from a custom vision endpoint", async () => {
@@ -16,5 +16,22 @@ describe("gradeSubmissionWithAI", () => {
       apiToken: "teacher-token",
       endpointUrl: "https://vision.example.test/grade",
     })).rejects.toThrow("HTTP 401 — Unauthorized");
+  });
+
+  it("reads a data URL without requesting the preview image", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(imageUrlToCleanBase64("data:image/jpeg;base64,QQ==")).resolves.toEqual({ mimeType: "image/jpeg", base64: "QQ==" });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("uses the available Flash model returned by Gemini", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      models: [{ name: "models/gemini-3.0-flash", supportedGenerationMethods: ["generateContent"] }],
+    }), { status: 200, headers: { "content-type": "application/json" } })));
+
+    await expect(resolveVisionEndpoint("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent", "teacher-token"))
+      .resolves.toBe("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.0-flash:generateContent");
   });
 });

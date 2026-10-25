@@ -28,26 +28,14 @@ async function prepareAnswerSheet(files: FileList | File[]) {
   if (!selectedFiles.length) throw new Error("اختر صورة أو ملف PDF واحداً على الأقل");
   const imageFiles = selectedFiles.filter((file) => file.type.startsWith("image/"));
   if (imageFiles.length) {
-    return Promise.all(imageFiles.map(async (file) => {
-      const bitmap = await createImageBitmap(file);
-      const scale = Math.min(1, 1600 / Math.max(bitmap.width, bitmap.height));
-      const canvas = document.createElement("canvas");
-      canvas.width = Math.max(1, Math.round(bitmap.width * scale));
-      canvas.height = Math.max(1, Math.round(bitmap.height * scale));
-      const context = canvas.getContext("2d");
-      if (!context) throw new Error("تعذر تجهيز صورة الإجابة");
-      context.fillStyle = "white";
-      context.fillRect(0, 0, canvas.width, canvas.height);
-      context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
-      bitmap.close();
-      const compressed = await new Promise<Blob>((resolve, reject) => canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error("تعذر ضغط صورة الإجابة")), "image/jpeg", 0.82));
-      return new Promise<string>((resolve, reject) => {
+    return Promise.all(imageFiles.map((file) =>
+      new Promise<string>((resolve, reject) => {
         const reader = new FileReader();
         reader.onload = () => resolve(String(reader.result));
         reader.onerror = () => reject(new Error("تعذر قراءة صورة الإجابة"));
-        reader.readAsDataURL(compressed);
-      });
-    }));
+        reader.readAsDataURL(file);
+      }),
+    ));
   }
   if (selectedFiles.some((file) => file.type === "application/pdf")) {
     throw new Error("يرجى رفع صور صفحات ملف PDF؛ التصحيح الذكي يحتاج صوراً واضحة حالياً");
