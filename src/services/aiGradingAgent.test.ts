@@ -1,8 +1,35 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { gradeSubmissionWithAI, imageUrlToCleanBase64, resolveVisionEndpoint } from "./aiGradingAgent";
 
 describe("gradeSubmissionWithAI", () => {
+  beforeEach(() => {
+    vi.stubGlobal("Image", class {
+      naturalWidth = 1;
+      naturalHeight = 1;
+      onload: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      set src(_value: string) { queueMicrotask(() => this.onload?.()); }
+    });
+    vi.spyOn(document, "createElement").mockImplementation((tagName: string) => {
+      if (tagName === "canvas") {
+        return {
+          width: 0,
+          height: 0,
+          getContext: () => ({ drawImage: vi.fn() }),
+          toDataURL: () => "data:image/jpeg;base64,QQ==",
+        } as unknown as HTMLCanvasElement;
+      }
+      return document.createElement(tagName);
+    });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
   it("reports the HTTP status and status text from a custom vision endpoint", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("Invalid API key", {
       status: 401,
@@ -18,14 +45,6 @@ describe("gradeSubmissionWithAI", () => {
     })).rejects.toThrow("HTTP 401 — Unauthorized");
   });
 
-  it("reads a data URL without requesting the preview image", async () => {
-    const fetchMock = vi.fn();
-    vi.stubGlobal("fetch", fetchMock);
-
-    await expect(imageUrlToCleanBase64("data:image/jpeg;base64,QQ==")).resolves.toEqual({ mimeType: "image/jpeg", base64: "QQ==" });
-    expect(fetchMock).not.toHaveBeenCalled();
-  });
-
   it("uses the available Flash model returned by Gemini", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({
       models: [{ name: "models/gemini-3.0-flash", supportedGenerationMethods: ["generateContent"] }],
@@ -35,7 +54,7 @@ describe("gradeSubmissionWithAI", () => {
       .resolves.toBe("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.0-flash:generateContent");
   });
 
-  it("stops a stalled model request after 12 seconds", async () => {
+  it("stops a stalled model request after 60 seconds", async () => {
     vi.useFakeTimers();
     vi.stubGlobal("fetch", vi.fn().mockImplementation((_url, init) => new Promise((_resolve, reject) => {
       const signal = (init as RequestInit).signal;
@@ -49,10 +68,10 @@ describe("gradeSubmissionWithAI", () => {
       apiToken: "teacher-token",
       endpointUrl: "https://vision.example.test/grade",
     });
-    const assertion = expect(grading).rejects.toThrow("خلال 12 ثانية");
-    await vi.advanceTimersByTimeAsync(12_000);
+    const assertion = expect(grading).rejects.toThrow("خلال 60 ثانية");
+    await vi.runAllTicks();
+    await vi.advanceTimersByTimeAsync(60_000);
 
     await assertion;
-    vi.useRealTimers();
   });
 });

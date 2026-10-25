@@ -17,6 +17,11 @@ export type GradeSubmissionInput = {
   studentImagesBase64: string[];
 };
 
+export type GradingProgress = {
+  stage: 1 | 2 | 3;
+  message: string;
+};
+
 export type CustomVisionConnectionSettings = {
   apiToken: string;
   endpointUrl: string;
@@ -35,7 +40,7 @@ type CleanImage = {
 };
 
 const MODEL_DISCOVERY_TIMEOUT_MS = 5_000;
-const GENERATE_CONTENT_TIMEOUT_MS = 12_000;
+const GENERATE_CONTENT_TIMEOUT_MS = 60_000;
 
 function abortAfter(controller: AbortController, duration: number) {
   return window.setTimeout(() => controller.abort(), duration);
@@ -46,39 +51,63 @@ export async function imageUrlToCleanBase64(src: string): Promise<CleanImage> {
   const source = src.trim();
   if (!source) throw new Error("تعذر قراءة إحدى صور الإجابة");
 
-  if (source.startsWith("data:")) {
-    const separatorIndex = source.indexOf(",");
-    const header = source.slice(0, separatorIndex);
-    const base64 = source.slice(separatorIndex + 1);
-    const mimeType = header.match(/^data:([^;,]+);base64$/i)?.[1];
-    if (separatorIndex < 0 || !mimeType || !/^[A-Za-z0-9+/=]+$/.test(base64)) throw new Error("صيغة إحدى صور الإجابة غير مدعومة");
-    return { mimeType, base64 };
-  }
+  const dataUrl = source.startsWith("data:") ? source : await loadImageAsDataUrl(source);
+  const match = dataUrl.match(/^data:([^;,]+);base64,([A-Za-z0-9+/=]+)$/i);
+  if (!match) throw new Error("صيغة إحدى صور الإجابة غير مدعومة");
+  return downscaleImage(match[1] ?? "image/jpeg", match[2] ?? "");
+}
 
+async function loadImageAsDataUrl(source: string) {
   const controller = new AbortController();
   const timeout = abortAfter(controller, 3_000);
-  let response: Response;
   try {
-    response = await fetch(source, { signal: controller.signal });
+    const response = await fetch(source, { signal: controller.signal });
+    if (!response.ok) throw new Error("تعذر تحميل إحدى صور الإجابة");
+    const blob = await response.blob();
+    if (!blob.type.startsWith("image/")) throw new Error("الملف المرفوع ليس صورة صالحة للتصحيح");
+    return await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result));
+      reader.onerror = () => reject(new Error("تعذر تحويل صورة الإجابة"));
+      reader.readAsDataURL(blob);
+    });
   } catch (error) {
     if (error instanceof DOMException && error.name === "AbortError") throw new Error("انتهت مهلة قراءة صورة الإجابة بعد 3 ثوانٍ");
+    if (error instanceof Error) throw error;
     throw new Error("تعذر تحميل إحدى صور الإجابة");
   } finally {
     window.clearTimeout(timeout);
   }
-  if (!response.ok) throw new Error("تعذر تحميل إحدى صور الإجابة");
-  const blob = await response.blob();
-  if (!blob.type.startsWith("image/")) throw new Error("الملف المرفوع ليس صورة صالحة للتصحيح");
+}
 
-  const dataUrl = await new Promise<string>((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result));
-    reader.onerror = () => reject(new Error("تعذر تحويل صورة الإجابة"));
-    reader.readAsDataURL(blob);
+async function downscaleImage(mimeType: string, base64: string): Promise<CleanImage> {
+  const image = new Image();
+  const dataUrl = `data:${mimeType};base64,${base64}`;
+  await new Promise<void>((resolve, reject) => {
+    const timeout = window.setTimeout(() => reject(new Error("انتهت مهلة تجهيز صورة الإجابة بعد 3 ثوانٍ")), 3_000);
+    image.onload = () => {
+      window.clearTimeout(timeout);
+      resolve();
+    };
+    image.onerror = () => {
+      window.clearTimeout(timeout);
+      reject(new Error("تعذر تجهيز إحدى صور الإجابة"));
+    };
+    image.src = dataUrl;
   });
-  const match = dataUrl.match(/^data:([^;,]+);base64,([A-Za-z0-9+/=]+)$/i);
-  if (!match) throw new Error("تعذر تجهيز إحدى صور الإجابة");
-  return { mimeType: match[1] ?? "image/jpeg", base64: match[2] ?? "" };
+  const longestSide = Math.max(image.naturalWidth, image.naturalHeight);
+  if (!longestSide) throw new Error("تعذر تجهيز إحدى صور الإجابة");
+  const scale = Math.min(1, 800 / longestSide);
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
+  canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
+  const context = canvas.getContext("2d");
+  if (!context) throw new Error("تعذر تجهيز إحدى صور الإجابة");
+  context.drawImage(image, 0, 0, canvas.width, canvas.height);
+  const compressed = canvas.toDataURL("image/jpeg", 0.7);
+  const compressedBase64 = compressed.split(",")[1];
+  if (!compressedBase64) throw new Error("تعذر تجهيز إحدى صور الإجابة");
+  return { mimeType: "image/jpeg", base64: compressedBase64 };
 }
 
 function isGoogleGenerateContentEndpoint(endpointUrl: string) {
@@ -186,7 +215,7 @@ function formatHttpDiagnostic(response: Response, details: string) {
 }
 
 /** Calls a teacher-configured vision endpoint with session-only browser settings. */
-export async function gradeSubmissionWithAI(input: GradeSubmissionInput, connection: CustomVisionConnectionSettings): Promise<AIGradeResult> {
+export async function gradeSubmissionWithAI(input: GradeSubmissionInput, connection: CustomVisionConnectionSettings, onProgress?: (progress: GradingProgress) => void): Promise<AIGradeResult> {
   if (!input.studentImagesBase64.length) {
     throw new Error("أضف صور ورقة الإجابة قبل بدء التصحيح");
   }
@@ -194,12 +223,15 @@ export async function gradeSubmissionWithAI(input: GradeSubmissionInput, connect
     throw new Error("أدخل رمز API في إعدادات الاتصال قبل بدء التصحيح");
   }
 
+  onProgress?.({ stage: 1, message: "1/3 جاري ضغط وتحويل صورة الورقة..." });
   const cleanImages = await Promise.all(input.studentImagesBase64.map(imageUrlToCleanBase64));
-  const controller = new AbortController();
+  const base64SizeKb = Math.ceil(cleanImages.reduce((total, image) => total + image.base64.length, 0) * 0.75 / 1024);
+  console.info(`[AI grading] Base64 payload: ${base64SizeKb} KB`);
   let response: Response;
   let timeout: number | undefined;
   try {
     const selectedEndpoint = await resolveVisionEndpoint(connection.endpointUrl, connection.apiToken);
+    onProgress?.({ stage: 2, message: "2/3 جاري إرسال الورقة إلى Gemini وتحليل الخط..." });
     const controller = new AbortController();
     timeout = abortAfter(controller, GENERATE_CONTENT_TIMEOUT_MS);
     response = await fetch(getEndpointUrl(selectedEndpoint, connection.apiToken), {
@@ -215,10 +247,15 @@ export async function gradeSubmissionWithAI(input: GradeSubmissionInput, connect
             ...cleanImages.map((image) => ({ inlineData: { mimeType: image.mimeType, data: image.base64 } })),
           ],
         }],
+        generationConfig: {
+          temperature: 0.2,
+          maxOutputTokens: 1024,
+          responseMimeType: "application/json",
+        },
       }),
     });
   } catch (error) {
-    if (error instanceof DOMException && error.name === "AbortError") throw new Error("تعذر الحصول على رد من وكيل التصحيح خلال 12 ثانية. تحقق من رمز API ومن أن خدمة Gemini تسمح بالاتصال من المتصفح");
+    if (error instanceof DOMException && error.name === "AbortError") throw new Error("تعذر الحصول على رد من وكيل التصحيح خلال 60 ثانية. تحقق من رمز API ومن أن خدمة Gemini تسمح بالاتصال من المتصفح");
     throw new Error("تعذر الاتصال بالوكيل. تحقق من الرابط ومن سماح خدمة الوكيل بالاتصال من المتصفح");
   } finally {
     if (timeout !== undefined) window.clearTimeout(timeout);
@@ -238,7 +275,9 @@ export async function gradeSubmissionWithAI(input: GradeSubmissionInput, connect
   const json = text.match(/\{[\s\S]*\}/)?.[0];
   if (!json) throw new Error("لم يُرجع الوكيل تقرير تصحيح صالحاً");
   try {
-    return parseGradeResult(JSON.parse(json));
+    const result = parseGradeResult(JSON.parse(json));
+    onProgress?.({ stage: 3, message: "3/3 تم استلام التصحيح!" });
+    return result;
   } catch (error) {
     if (error instanceof Error) throw error;
     throw new Error("تعذر قراءة تقرير التصحيح من الوكيل");
