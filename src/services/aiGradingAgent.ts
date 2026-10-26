@@ -18,7 +18,13 @@ export type GradeSubmissionInput = {
 };
 
 export type GradingProgress = { stage: 1 | 2 | 3; message: string };
-export type CustomVisionConnectionSettings = { apiToken: string; endpointUrl: string };
+export type AIProvider = "google-ai-studio" | "openai-compatible";
+export type CustomVisionConnectionSettings = {
+  provider: AIProvider;
+  apiToken: string;
+  endpointUrl: string;
+  modelId: string;
+};
 export type VisionConnectionResult = { ok: boolean; telemetry: string; endpointUrl?: string };
 
 const CONNECTION_SETTINGS_KEY = "midada-ai-grading-connection";
@@ -29,8 +35,17 @@ const AUTO_PROBE_TIMEOUT_MS = 8_000;
 const GENERATE_CONTENT_TIMEOUT_MS = 30_000;
 
 export const defaultCustomVisionConnection: CustomVisionConnectionSettings = {
+  provider: "google-ai-studio",
   apiToken: "",
   endpointUrl: `${GOOGLE_BASE}/gemini-flash-latest:generateContent`,
+  modelId: "gemini-flash-latest",
+};
+
+export const defaultOpenAICompatibleConnection: CustomVisionConnectionSettings = {
+  provider: "openai-compatible",
+  apiToken: "",
+  endpointUrl: "https://api.openai.com/v1/chat/completions",
+  modelId: "gpt-4o-mini",
 };
 
 type CleanImage = { base64: string; mimeType: string };
@@ -63,6 +78,32 @@ export function sanitizeVisionEndpoint(endpointUrl: string) {
     if (parsed.protocol !== "https:" && !permitsLocal || parsed.username || parsed.password || parsed.hash) return defaultCustomVisionConnection.endpointUrl;
     return parsed.toString();
   } catch { return defaultCustomVisionConnection.endpointUrl; }
+}
+
+function sanitizeCustomHttpsEndpoint(endpointUrl: string, fallback: string) {
+  try {
+    const parsed = new URL(endpointUrl.trim());
+    const permitsLocal = parsed.protocol === "http:" && ["localhost", "127.0.0.1"].includes(parsed.hostname);
+    if ((parsed.protocol !== "https:" && !permitsLocal) || parsed.username || parsed.password || parsed.hash) return fallback;
+    return parsed.toString();
+  } catch { return fallback; }
+}
+
+function isOpenAICompatibleConnection(connection: CustomVisionConnectionSettings) {
+  return connection.provider === "openai-compatible";
+}
+
+function sanitizeConnection(connection: Partial<CustomVisionConnectionSettings>): CustomVisionConnectionSettings {
+  const provider: AIProvider = connection.provider === "openai-compatible" ? "openai-compatible" : "google-ai-studio";
+  const defaults = provider === "openai-compatible" ? defaultOpenAICompatibleConnection : defaultCustomVisionConnection;
+  return {
+    provider,
+    apiToken: typeof connection.apiToken === "string" ? connection.apiToken : "",
+    endpointUrl: provider === "openai-compatible"
+      ? sanitizeCustomHttpsEndpoint(typeof connection.endpointUrl === "string" ? connection.endpointUrl : defaults.endpointUrl, defaults.endpointUrl)
+      : sanitizeVisionEndpoint(typeof connection.endpointUrl === "string" ? connection.endpointUrl : defaults.endpointUrl),
+    modelId: typeof connection.modelId === "string" && connection.modelId.trim() ? connection.modelId.trim() : defaults.modelId,
+  };
 }
 
 /** Converts browser image URLs into normalized JPEG data, capped at 800px. */
@@ -111,10 +152,20 @@ async function downscaleImage(mimeType: string, base64: string): Promise<CleanIm
 
 function telemetryLine(endpointUrl: string, payloadKb: number, label: string, elapsedMs: number) { return `URL: ${endpointUrl}\nPayload: ${payloadKb} KB\nResult: ${label}\nElapsed: ${elapsedMs} ms`; }
 
-async function callAttempt(endpointUrl: string, token: string, body: unknown, timeoutMs: number): Promise<AttemptResult> {
+export function buildOpenAICompatibleBody(input: GradeSubmissionInput & { modelId: string }, images: CleanImage[]) {
+  return {
+    model: input.modelId,
+    temperature: 0.2,
+    max_tokens: 1024,
+    response_format: { type: "json_object" },
+    messages: [{ role: "user", content: [{ type: "text", text: gradingPrompt(input.exerciseTitle) }, ...images.map((image) => ({ type: "image_url", image_url: { url: `data:${image.mimeType};base64,${image.base64}` } }))] }],
+  };
+}
+
+async function callAttempt(connection: CustomVisionConnectionSettings, body: unknown, timeoutMs: number): Promise<AttemptResult> {
   const controller = new AbortController(); const timeout = abortAfter(controller, timeoutMs); const started = performance.now();
-  const url = sanitizeVisionEndpoint(endpointUrl);
-  const headers = { "Content-Type": "application/json", "X-goog-api-key": token.trim() };
+  const url = isOpenAICompatibleConnection(connection) ? sanitizeCustomHttpsEndpoint(connection.endpointUrl, defaultOpenAICompatibleConnection.endpointUrl) : sanitizeVisionEndpoint(connection.endpointUrl);
+  const headers = isOpenAICompatibleConnection(connection) ? { "Content-Type": "application/json", Authorization: `Bearer ${connection.apiToken.trim()}` } : { "Content-Type": "application/json", "X-goog-api-key": connection.apiToken.trim() };
   try {
     const response = await fetch(url, { method: "POST", headers, credentials: "omit", signal: controller.signal, body: JSON.stringify(body) });
     return { response, endpointUrl: url, elapsedMs: Math.round(performance.now() - started) };
@@ -127,32 +178,33 @@ async function responseError(response: Response) {
   catch { return errorText.trim().slice(0, 500) || fallback; }
 }
 
-async function requestVision(endpointUrl: string, token: string, body: unknown, timeoutMs: number, payloadKb: number) {
+async function requestVision(connection: CustomVisionConnectionSettings, body: unknown, timeoutMs: number, payloadKb: number) {
   try {
-    const attempt = await callAttempt(endpointUrl, token, body, timeoutMs);
+    const attempt = await callAttempt(connection, body, timeoutMs);
     if (attempt.response.ok) return attempt;
     const details = await responseError(attempt.response);
     throw new VisionConnectionError(details, telemetryLine(attempt.endpointUrl, payloadKb, `HTTP ${attempt.response.status} — ${attempt.response.statusText || details}\n${details}`, attempt.elapsedMs));
   } catch (error) {
     if (error instanceof VisionConnectionError) throw error;
     const message = error instanceof DOMException && error.name === "AbortError" ? `Timeout after ${timeoutMs}ms` : `${error instanceof Error ? error.name : "FetchError"}: ${error instanceof Error ? error.message : "unknown"}`;
-    throw new VisionConnectionError("تعذر الاتصال بوكيل التصحيح الخارجي", telemetryLine(sanitizeVisionEndpoint(endpointUrl), payloadKb, message, timeoutMs));
+    throw new VisionConnectionError("تعذر الاتصال بوكيل التصحيح الخارجي. تأكد أن الرابط يسمح بطلبات المتصفح (CORS).", telemetryLine(connection.endpointUrl, payloadKb, message, timeoutMs));
   }
 }
 
 /** Checks endpoint/model/auth compatibility without uploading a student's answer sheet. */
 export async function testVisionConnection(connection: CustomVisionConnectionSettings, timeoutMs = PROBE_TIMEOUT_MS): Promise<VisionConnectionResult> {
   if (!connection.apiToken.trim()) return { ok: false, telemetry: "API Token is required before testing the connection." };
-  const body = { contents: [{ role: "user", parts: [{ text: "Reply with {\"ok\":true} only." }] }], generationConfig: { temperature: 0.1, responseMimeType: "application/json" } };
+  const safeConnection = sanitizeConnection(connection);
+  const body = isOpenAICompatibleConnection(safeConnection) ? { model: safeConnection.modelId, temperature: 0.1, max_tokens: 32, response_format: { type: "json_object" }, messages: [{ role: "user", content: "Return exactly {\"ok\":true}." }] } : { contents: [{ role: "user", parts: [{ text: "Reply with {\"ok\":true} only." }] }], generationConfig: { temperature: 0.1, maxOutputTokens: 32, responseMimeType: "application/json" } };
   try {
-    const result = await requestVision(connection.endpointUrl, connection.apiToken, body, timeoutMs, 0);
+    const result = await requestVision(safeConnection, body, timeoutMs, 0);
     return { ok: true, endpointUrl: result.endpointUrl, telemetry: telemetryLine(result.endpointUrl, 0, `HTTP ${result.response.status}`, result.elapsedMs) };
   } catch (error) { return { ok: false, telemetry: error instanceof VisionConnectionError ? error.telemetry : "Connection probe failed." }; }
 }
 
 /** Finds an accessible endpoint through the lightweight probe rather than trusting a stale stored model. */
 export async function resolveVisionEndpoint(endpointUrl: string, apiToken: string): Promise<string> {
-  const probe = await testVisionConnection({ endpointUrl, apiToken }, 5_000);
+  const probe = await testVisionConnection({ ...defaultCustomVisionConnection, endpointUrl, apiToken }, 5_000);
   return probe.endpointUrl || sanitizeVisionEndpoint(endpointUrl);
 }
 
@@ -160,8 +212,7 @@ export function loadCustomVisionConnection(): CustomVisionConnectionSettings {
   if (typeof window === "undefined") return defaultCustomVisionConnection;
   try {
     const saved = JSON.parse(window.sessionStorage.getItem(CONNECTION_SETTINGS_KEY) ?? "{}") as Partial<CustomVisionConnectionSettings>;
-    const endpointUrl = sanitizeVisionEndpoint(typeof saved.endpointUrl === "string" ? saved.endpointUrl : "");
-    const settings = { apiToken: typeof saved.apiToken === "string" ? saved.apiToken : "", endpointUrl };
+    const settings = sanitizeConnection(saved);
     window.sessionStorage.setItem(CONNECTION_SETTINGS_KEY, JSON.stringify(settings));
     return settings;
   } catch { return defaultCustomVisionConnection; }
@@ -169,7 +220,7 @@ export function loadCustomVisionConnection(): CustomVisionConnectionSettings {
 
 export function saveCustomVisionConnection(settings: CustomVisionConnectionSettings) {
   if (typeof window === "undefined") return;
-  window.sessionStorage.setItem(CONNECTION_SETTINGS_KEY, JSON.stringify({ ...settings, endpointUrl: sanitizeVisionEndpoint(settings.endpointUrl) }));
+  window.sessionStorage.setItem(CONNECTION_SETTINGS_KEY, JSON.stringify(sanitizeConnection(settings)));
 }
 
 const gradingPrompt = (exerciseTitle: string) => `أنت أستاذ خبير ومصحح أكاديمي دقيق. صحّح حل الطالب في تمرين "${exerciseTitle}" من الصور المرفقة. حل الأسئلة علمياً أولاً ثم قارن الحل خطوة بخطوة. أرجع JSON صالحاً فقط بلا أي نص إضافي بهذا الشكل:\n{"score":15,"summary":"...","stepByStepCorrection":[{"title":"السؤال 1","result":"correct أو needs-review أو incorrect","note":"..."}],"studentFeedback":"..."}`;
@@ -200,14 +251,26 @@ export async function gradeSubmissionWithAI(input: GradeSubmissionInput, connect
   const cleanImages = await Promise.all(input.studentImagesBase64.map(imageUrlToCleanBase64));
   const payloadKb = Math.ceil(cleanImages.reduce((total, image) => total + image.base64.length, 0) * 0.75 / 1024);
   console.info(`[AI grading] Base64 payload: ${payloadKb} KB`);
-  const probe = await testVisionConnection(connection, AUTO_PROBE_TIMEOUT_MS);
+  const safeConnection = sanitizeConnection(connection);
+  const probe = await testVisionConnection(safeConnection, AUTO_PROBE_TIMEOUT_MS);
   if (!probe.ok) throw new VisionConnectionError("فشل الفحص السريع قبل إرسال ورقة الطالب", probe.telemetry);
-  onProgress?.({ stage: 2, message: "2/3 جاري إرسال الورقة إلى Gemini وتحليل الخط..." });
-  const body = { contents: [{ parts: [{ text: gradingPrompt(input.exerciseTitle) }, ...cleanImages.map((image) => ({ inline_data: { mime_type: image.mimeType, data: image.base64 } }))] }] };
-  const result = await requestVision(probe.endpointUrl || connection.endpointUrl, connection.apiToken, body, GENERATE_CONTENT_TIMEOUT_MS, payloadKb);
+  onProgress?.({ stage: 2, message: `2/3 جاري إرسال الورقة إلى ${safeConnection.provider === "google-ai-studio" ? "Gemini" : "النموذج المختار"} وتحليل الخط...` });
+  const body = isOpenAICompatibleConnection(safeConnection)
+    ? buildOpenAICompatibleBody({ ...input, modelId: safeConnection.modelId }, cleanImages)
+    : {
+        contents: [{
+          parts: [
+            { text: gradingPrompt(input.exerciseTitle) },
+            ...cleanImages.map((image) => ({ inline_data: { mime_type: image.mimeType, data: image.base64 } })),
+          ],
+        }],
+        generationConfig: { temperature: 0.2, maxOutputTokens: 1024, responseMimeType: "application/json" },
+      };
+  const result = await requestVision({ ...safeConnection, endpointUrl: probe.endpointUrl || safeConnection.endpointUrl }, body, GENERATE_CONTENT_TIMEOUT_MS, payloadKb);
   if (!result.response.headers.get("content-type")?.includes("application/json")) throw new VisionConnectionError("أعاد الوكيل استجابة غير متوقعة بدلاً من JSON", telemetryLine(result.endpointUrl, payloadKb, "Unexpected response content type", result.elapsedMs));
-  const payload = await result.response.json() as { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> };
-  const json = extractJsonObject(payload.candidates?.[0]?.content?.parts?.map((part) => part.text ?? "").join("\n") ?? "");
+  const payload = await result.response.json() as { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>; choices?: Array<{ message?: { content?: string } }> };
+  const responseText = isOpenAICompatibleConnection(safeConnection) ? payload.choices?.[0]?.message?.content ?? "" : payload.candidates?.[0]?.content?.parts?.map((part) => part.text ?? "").join("\n") ?? "";
+  const json = extractJsonObject(responseText);
   if (!json) throw new VisionConnectionError("لم يُرجع الوكيل تقرير تصحيح صالحاً", telemetryLine(result.endpointUrl, payloadKb, "Missing JSON report", result.elapsedMs));
   const report = parseGradeResult(JSON.parse(json)); onProgress?.({ stage: 3, message: "3/3 تم استلام التصحيح!" }); return report;
 }
