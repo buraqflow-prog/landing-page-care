@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { createSmartFallbackGrade, loadCustomVisionConnection, parseGradeResult, sanitizeVisionEndpoint, testVisionConnection } from "./aiGradingAgent";
+import { buildOpenAICompatibleBody, createSmartFallbackGrade, loadCustomVisionConnection, parseGradeResult, sanitizeVisionEndpoint, testVisionConnection } from "./aiGradingAgent";
 
 describe("AI grading connection resilience", () => {
   beforeEach(() => {
@@ -32,6 +32,12 @@ describe("AI grading connection resilience", () => {
     expect(result.ok).toBe(true);
     expect(fetchMock.mock.calls[0]?.[0]).not.toContain("?key=");
     expect(fetchMock.mock.calls[0]?.[1]?.headers).toMatchObject({ "X-goog-api-key": "AQ.token" });
+  });
+
+  it("formats compatible provider image grading with the selected model", () => {
+    const body = buildOpenAICompatibleBody({ exerciseTitle: "رياضيات", modelId: "vision-model", studentImagesBase64: [] }, [{ mimeType: "image/jpeg", base64: "abc" }]);
+    expect(body).toMatchObject({ model: "vision-model", response_format: { type: "json_object" } });
+    expect(JSON.stringify(body)).toContain("data:image/jpeg;base64,abc");
   });
 
   it("returns a clear local continuity grade with the requested math steps", () => {
