@@ -74,6 +74,7 @@ async function prepareAnswerSheet(files: FileList | File[]) {
 export function TeacherDashboard({ onStartClass }: { onStartClass: () => void }) {
   const [submissions, setSubmissions] = useState(initialSubmissions);
   const [activeSubmission, setActiveSubmission] = useState<Submission | null>(null);
+  const [studioOpen, setStudioOpen] = useState(false);
   const [score, setScore] = useState("");
   const [feedback, setFeedback] = useState("");
   const [aiReport, setAiReport] = useState<AIGradeResult | null>(null);
@@ -120,6 +121,7 @@ export function TeacherDashboard({ onStartClass }: { onStartClass: () => void })
 
   const openStudio = (submission: Submission) => {
     setActiveSubmission(submission);
+    setStudioOpen(true);
     setScore(submission.grade?.toString() ?? "");
     setFeedback(submission.feedback ?? "");
     setAiReport(null);
@@ -206,6 +208,7 @@ export function TeacherDashboard({ onStartClass }: { onStartClass: () => void })
     }
     setSubmissions((current) => current.map((entry) => entry.id === activeSubmission.id ? { ...entry, status: "تم التصحيح", grade: parsedScore, feedback } : entry));
     setActiveSubmission(null);
+    setStudioOpen(false);
     toast.success("تم اعتماد النتيجة وإرسالها للطالب");
   };
 
@@ -213,7 +216,10 @@ export function TeacherDashboard({ onStartClass }: { onStartClass: () => void })
     <section className="flex flex-col justify-between gap-5 sm:flex-row sm:items-end"><div><p className="text-sm font-semibold text-accent-foreground">مساحة الأستاذ</p><h1 className="mt-1 text-3xl font-bold text-foreground">مرحباً أستاذ أحمد</h1><p className="mt-2 text-muted-foreground">تابع حصصك وتمارين طلابك من مكان واحد.</p></div><div className="flex gap-2"><Button onClick={() => setExerciseDialogOpen(true)}><Plus />إنشاء تمرين جديد</Button></div></section>
     <section><div className="mb-4 flex items-center gap-2"><CalendarClock className="size-5 text-primary" /><h2 className="text-xl font-bold">الحصص المباشرة القادمة</h2></div><div className="grid gap-4 lg:grid-cols-2">{sessions.map((session) => <article key={session.group} className="border border-border bg-card p-5 shadow-sm"><div className="flex items-start justify-between gap-3"><div><p className="font-bold">{session.group}</p><p className="mt-1 text-sm text-muted-foreground">{session.subject} · {session.students} طالباً</p></div><Badge variant="secondary">{session.time}</Badge></div><Button className="mt-5 w-full sm:w-auto" onClick={onStartClass}><Video />بدء الحصة المباشرة</Button></article>)}</div></section>
     <section className="border border-border bg-card shadow-sm"><div className="flex flex-col justify-between gap-3 border-b border-border p-5 sm:flex-row sm:items-center"><div><div className="flex items-center gap-2"><ClipboardCheck className="size-5 text-primary" /><h2 className="text-xl font-bold">مركز التمارين والتصحيح الذكي</h2></div><p className="mt-1 text-sm text-muted-foreground">اختر إجابة لفتح استوديو التصحيح والاعتماد.</p></div><div className="flex flex-wrap items-center gap-2"><Badge variant="outline">{submissions.length} إجابات</Badge><Button onClick={() => setQuickUploadOpen(true)}><Upload />رفع ورقة طالب وتصحيحها بالوكيل</Button></div></div><Table><TableHeader><TableRow><TableHead className="text-right">الطالب</TableHead><TableHead className="text-right">الحالة</TableHead><TableHead className="text-right">الملف</TableHead><TableHead className="text-right">العلامة</TableHead><TableHead className="text-right">الملاحظات</TableHead><TableHead className="text-right">إجراء</TableHead></TableRow></TableHeader><TableBody>{submissions.map((submission) => <TableRow key={submission.id}><TableCell className="font-semibold">{submission.student}</TableCell><TableCell><Badge variant={submission.status === "تم التصحيح" ? "secondary" : "outline"}>{submission.status}</Badge></TableCell><TableCell dir="ltr" className="text-xs text-muted-foreground">{submission.fileName}</TableCell><TableCell>{submission.grade !== undefined ? `${submission.grade}/20` : "—"}</TableCell><TableCell className="max-w-48 text-xs text-muted-foreground">{submission.feedback ?? "بانتظار المراجعة"}</TableCell><TableCell><Button size="sm" onClick={() => openStudio(submission)}><Sparkles />استوديو التصحيح</Button></TableCell></TableRow>)}</TableBody></Table></section>
-    <Dialog open={activeSubmission !== null} onOpenChange={(open) => { if (!open) setActiveSubmission(null); }}>
+    <Dialog open={studioOpen} onOpenChange={(open) => {
+      setStudioOpen(open);
+      if (!open) setActiveSubmission(null);
+    }}>
       <DialogContent dir="rtl" className="max-h-[90vh] max-w-6xl overflow-y-auto">
         {activeSubmission ? <>
           <DialogHeader>
@@ -245,7 +251,7 @@ export function TeacherDashboard({ onStartClass }: { onStartClass: () => void })
               <div className="space-y-3"><Input value={score} onChange={(event) => setScore(event.target.value)} inputMode="decimal" placeholder="العلامة من 20" /><Textarea value={feedback} onChange={(event) => setFeedback(event.target.value)} placeholder="ملاحظات للطالب" /></div>
             </section>
           </div>
-          <DialogFooter className="gap-2 sm:gap-2"><Button type="button" variant="outline" onClick={() => setActiveSubmission(null)}>إلغاء</Button><Button type="button" variant="secondary" disabled={isGrading || isPreparingAnswerSheet} onClick={() => void autoGrade()}><Sparkles />{isGrading ? gradingProgress?.message ?? "جارٍ التصحيح..." : "تصحيح تلقائي بالوكيل الذكي"}</Button><Button type="button" disabled={!score} onClick={saveGrade}><CheckCircle2 />اعتماد النتيجة</Button></DialogFooter>
+          <DialogFooter className="gap-2 sm:gap-2"><Button type="button" variant="outline" onClick={() => { setStudioOpen(false); setActiveSubmission(null); }}>إلغاء</Button><Button type="button" variant="secondary" disabled={isGrading || isPreparingAnswerSheet} onClick={() => void autoGrade()}><Sparkles />{isGrading ? gradingProgress?.message ?? "جارٍ التصحيح..." : "تصحيح تلقائي بالوكيل الذكي"}</Button><Button type="button" disabled={!score} onClick={saveGrade}><CheckCircle2 />اعتماد النتيجة</Button></DialogFooter>
         </> : null}
       </DialogContent>
     </Dialog>
