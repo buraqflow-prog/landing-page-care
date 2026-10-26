@@ -255,7 +255,17 @@ export async function gradeSubmissionWithAI(input: GradeSubmissionInput, connect
   const probe = await testVisionConnection(safeConnection, AUTO_PROBE_TIMEOUT_MS);
   if (!probe.ok) throw new VisionConnectionError("فشل الفحص السريع قبل إرسال ورقة الطالب", probe.telemetry);
   onProgress?.({ stage: 2, message: `2/3 جاري إرسال الورقة إلى ${safeConnection.provider === "google-ai-studio" ? "Gemini" : "النموذج المختار"} وتحليل الخط...` });
-  const body = isOpenAICompatibleConnection(safeConnection) ? buildOpenAICompatibleBody({ ...input, modelId: safeConnection.modelId }, cleanImages) : { contents: [{ parts: [{ text: gradingPrompt(input.exerciseTitle) }, ...cleanImages.map((image) => ({ inline_data: { mime_type: image.mimeType, data: image.base64 } })) }], generationConfig: { temperature: 0.2, maxOutputTokens: 1024, responseMimeType: "application/json" } };
+  const body = isOpenAICompatibleConnection(safeConnection)
+    ? buildOpenAICompatibleBody({ ...input, modelId: safeConnection.modelId }, cleanImages)
+    : {
+        contents: [{
+          parts: [
+            { text: gradingPrompt(input.exerciseTitle) },
+            ...cleanImages.map((image) => ({ inline_data: { mime_type: image.mimeType, data: image.base64 } })),
+          ],
+        }],
+        generationConfig: { temperature: 0.2, maxOutputTokens: 1024, responseMimeType: "application/json" },
+      };
   const result = await requestVision({ ...safeConnection, endpointUrl: probe.endpointUrl || safeConnection.endpointUrl }, body, GENERATE_CONTENT_TIMEOUT_MS, payloadKb);
   if (!result.response.headers.get("content-type")?.includes("application/json")) throw new VisionConnectionError("أعاد الوكيل استجابة غير متوقعة بدلاً من JSON", telemetryLine(result.endpointUrl, payloadKb, "Unexpected response content type", result.elapsedMs));
   const payload = await result.response.json() as { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>; choices?: Array<{ message?: { content?: string } }> };
