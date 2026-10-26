@@ -13,4 +13,4 @@
 
 - Use `src/lib/supabase.ts` only for the external self-managed Supabase client; mock data must keep the interface functional without environment keys.
 - Keep classroom whiteboard state ephemeral and synchronize it through the external Supabase Realtime broadcast channel; this preserves immediate collaboration without storing each drawing operation.
-- Keep AI grading credentials user-configured and session-only for local testing; `aiGradingAgent.ts` supports Google AI Studio/Gemini and CORS-enabled OpenAI-compatible vision endpoints, normalizes answer images to JPEG within 800px with a safe fallback, reports live grading progress, validates custom HTTPS endpoints, and sends no hardcoded keys.
+- Keep AI grading credentials user-configured and session-only for local testing; `aiGradingAgent.ts` supports Google AI Studio/Gemini and CORS-enabled OpenAI-compatible vision endpoints, normalizes answer images to JPEG within 800px with a safe fallback, and redacts teacher tokens from all connection diagnostics and logs.
