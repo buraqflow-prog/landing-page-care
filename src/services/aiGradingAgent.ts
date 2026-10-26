@@ -573,17 +573,18 @@ export async function gradeSubmissionWithAI(
     : {
         contents: [
           {
+            role: "user",
             parts: [
               { text: gradingPrompt(input.exerciseTitle) },
               ...cleanImages.map((image) => ({
-                inline_data: { mime_type: image.mimeType, data: image.base64 },
+                inlineData: { mimeType: image.mimeType, data: image.base64 },
               })),
             ],
           },
         ],
         generationConfig: {
           temperature: 0.2,
-          maxOutputTokens: 1024,
+          maxOutputTokens: 2048,
           responseMimeType: "application/json",
         },
       };
@@ -593,20 +594,41 @@ export async function gradeSubmissionWithAI(
     GENERATE_CONTENT_TIMEOUT_MS,
     payloadKb,
   );
-  if (!result.response.headers.get("content-type")?.includes("application/json"))
-    throw new VisionConnectionError(
-      "أعاد الوكيل استجابة غير متوقعة بدلاً من JSON",
-      telemetryLine(
-        result.endpointUrl,
-        payloadKb,
-        "Unexpected response content type",
-        result.elapsedMs,
-      ),
-    );
-  const payload = (await result.response.json()) as {
+
+  const rawText = await result.response.text();
+  let payload: {
     candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
     choices?: Array<{ message?: { content?: string } }>;
+    error?: { message?: string };
   };
+
+  try {
+    payload = JSON.parse(rawText);
+  } catch {
+    const extracted = extractJsonObject(rawText);
+    if (extracted) {
+      payload = JSON.parse(extracted);
+    } else {
+      const contentType = result.response.headers.get("content-type") ?? "unknown";
+      throw new VisionConnectionError(
+        "أعاد الوكيل استجابة غير متوقعة بدلاً من JSON",
+        telemetryLine(
+          result.endpointUrl,
+          payloadKb,
+          `Unexpected response (${contentType})`,
+          result.elapsedMs,
+        ),
+      );
+    }
+  }
+
+  if (payload.error?.message) {
+    throw new VisionConnectionError(
+      payload.error.message,
+      telemetryLine(result.endpointUrl, payloadKb, payload.error.message, result.elapsedMs),
+    );
+  }
+
   const responseText = isOpenAICompatibleConnection(safeConnection)
     ? (payload.choices?.[0]?.message?.content ?? "")
     : (payload.candidates?.[0]?.content?.parts?.map((part) => part.text ?? "").join("\n") ?? "");

@@ -1,17 +1,23 @@
 import { useEffect, useState } from "react";
 import {
+  AlertCircle,
   CalendarClock,
   Camera,
   CheckCircle2,
   ClipboardCheck,
+  Copy,
+  ExternalLink,
   Eye,
   FileText,
+  Loader2,
   Plus,
+  RotateCcw,
   ScanLine,
   Settings2,
   Sparkles,
   Upload,
   Video,
+  X,
   ZoomIn,
   ZoomOut,
 } from "lucide-react";
@@ -168,6 +174,7 @@ export function TeacherDashboard({ onStartClass }: { onStartClass: () => void })
   const [zoom, setZoom] = useState(1);
   const [exerciseDialogOpen, setExerciseDialogOpen] = useState(false);
   const [quickUploadOpen, setQuickUploadOpen] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
   const [quickExerciseTitle, setQuickExerciseTitle] = useState("تمرين: قوانين نيوتن");
   const [quickStudentName, setQuickStudentName] = useState("كريم علي");
   const [isPreparingAnswerSheet, setIsPreparingAnswerSheet] = useState(false);
@@ -325,6 +332,32 @@ export function TeacherDashboard({ onStartClass }: { onStartClass: () => void })
     } catch {
       toast.error("تعذر نسخ التقرير التقني");
     }
+  };
+  const copyGeminiWebPrompt = async () => {
+    if (!activeSubmission) return;
+    const fileName = activeSubmission.fileName;
+    const prompt = `@Google Drive افتح الملف المسمى ${fileName}. الصفحة الأولى تحتوي على أسئلة التمرين، والصفحات التالية تحتوي على إجابات الطالب بخط اليد. بصفتك أستاذاً خبيراً في المادة، قم بحل الأسئلة بنفسك أولاً، ثم صحح إجابات الطالب بناءً على ذلك خطوة بخطوة، ووضح أين أخطأ، وامنحه تقييماً نهائياً من 20 مع نصيحة مختصرة لتطوير مستواه.`;
+    try {
+      await navigator.clipboard.writeText(prompt);
+      toast.success("تم نسخ أمر التصحيح! الصقه الآن في Gemini");
+      window.open("https://gemini.google.com", "_blank");
+    } catch {
+      toast.error("تعذر نسخ الأمر إلى الحافظة");
+    }
+  };
+  const attachSampleImage = () => {
+    if (!activeSubmission) return;
+    const image = createSampleAnswerSheet();
+    if (!image) return;
+    const updated = {
+      ...activeSubmission,
+      images: [image],
+    };
+    setActiveSubmission(updated);
+    setSubmissions((current) =>
+      current.map((entry) => (entry.id === updated.id ? updated : entry)),
+    );
+    toast.success("تم إدراج ورقة إجابة نموذجية للتجربة");
   };
   const saveGrade = () => {
     if (!activeSubmission || !score) {
@@ -520,6 +553,460 @@ export function TeacherDashboard({ onStartClass }: { onStartClass: () => void })
               حفظ المسودة
             </Button>
           </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* استوديو التصحيح الذكي Modal */}
+      <Dialog
+        open={Boolean(activeSubmission)}
+        onOpenChange={(open) => {
+          if (!open) {
+            setActiveSubmission(null);
+            setShowSettings(false);
+          }
+        }}
+      >
+        <DialogContent className="max-h-[92vh] max-w-5xl overflow-y-auto p-4 sm:p-6" dir="rtl">
+          <DialogHeader className="border-b border-border pb-4">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="flex items-center gap-2">
+                <div className="rounded-md bg-primary/10 p-2 text-primary">
+                  <Sparkles className="size-5" />
+                </div>
+                <div>
+                  <DialogTitle className="text-xl font-bold">استوديو التصحيح الذكي</DialogTitle>
+                  <DialogDescription className="text-xs sm:text-sm">
+                    ورقة الطالب:{" "}
+                    <span className="font-semibold text-foreground">
+                      {activeSubmission?.student}
+                    </span>
+                    {activeSubmission?.exerciseTitle && (
+                      <span className="text-muted-foreground">
+                        {" "}
+                        · {activeSubmission.exerciseTitle}
+                      </span>
+                    )}
+                  </DialogDescription>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <Badge
+                  variant={activeSubmission?.status === "تم التصحيح" ? "secondary" : "outline"}
+                >
+                  {activeSubmission?.status}
+                </Badge>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setShowSettings((v) => !v)}
+                  className="gap-1.5 text-xs"
+                >
+                  <Settings2 className="size-3.5" />
+                  <span>إعدادات الذكاء الاصطناعي</span>
+                </Button>
+              </div>
+            </div>
+          </DialogHeader>
+
+          {/* Collapsible Connection Settings */}
+          {showSettings && (
+            <div className="rounded-lg border border-border bg-muted/40 p-4 space-y-4">
+              <div className="flex items-center justify-between border-b border-border pb-2">
+                <div className="flex items-center gap-2">
+                  <Settings2 className="size-4 text-primary" />
+                  <span className="text-sm font-bold">
+                    إعدادات الاتصال بنماذج الرؤية والذكاء الاصطناعي
+                  </span>
+                </div>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setShowSettings(false)}
+                  className="h-6 w-6 p-0"
+                >
+                  <X className="size-3.5" />
+                </Button>
+              </div>
+
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div className="space-y-1">
+                  <label className="text-xs font-semibold">مزود الخدمة</label>
+                  <Select
+                    value={connectionSettings.provider}
+                    onValueChange={(val) => changeProvider(val as AIProvider)}
+                  >
+                    <SelectTrigger className="h-9 text-xs">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent dir="rtl">
+                      <SelectItem value="google-ai-studio">
+                        Google AI Studio (Gemini Vision)
+                      </SelectItem>
+                      <SelectItem value="openai-compatible">
+                        OpenAI-Compatible Vision API
+                      </SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-xs font-semibold">
+                    مفتاح API الخاص بك (يُحفظ في الجلسة فقط)
+                  </label>
+                  <Input
+                    type="password"
+                    placeholder="أدخل رمز الوصول (API Key)..."
+                    value={connectionSettings.apiToken}
+                    onChange={(e) =>
+                      updateConnectionSettings({
+                        ...connectionSettings,
+                        apiToken: e.target.value,
+                      })
+                    }
+                    className="h-9 text-xs"
+                  />
+                </div>
+
+                <div className="space-y-1 sm:col-span-2">
+                  <label className="text-xs font-semibold">نقطة النهاية (Endpoint URL)</label>
+                  <Input
+                    dir="ltr"
+                    value={connectionSettings.endpointUrl}
+                    onChange={(e) =>
+                      updateConnectionSettings({
+                        ...connectionSettings,
+                        endpointUrl: e.target.value,
+                      })
+                    }
+                    className="h-9 font-mono text-xs"
+                  />
+                </div>
+              </div>
+
+              <div className="flex items-center justify-between pt-1">
+                <p className="text-[11px] text-muted-foreground">
+                  يتم الاحتفاظ بالمفتاح مؤقتاً داخل جلسة المتصفح فقط ولا يتم تخزينه بأي خادم خارجي.
+                </p>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  disabled={isTestingConnection}
+                  onClick={() => void quickTestConnection()}
+                  className="gap-1.5 text-xs"
+                >
+                  {isTestingConnection ? (
+                    <>
+                      <Loader2 className="size-3.5 animate-spin" />
+                      جاري فحص الاتصال...
+                    </>
+                  ) : (
+                    <>
+                      <ScanLine className="size-3.5" />
+                      فحص الاتصال
+                    </>
+                  )}
+                </Button>
+              </div>
+            </div>
+          )}
+
+          {/* Main Grid: Answer Sheet Preview + AI Correction & Grading Panel */}
+          <div className="grid gap-6 lg:grid-cols-12">
+            {/* Answer Sheet Column (7 cols on lg) */}
+            <div className="flex flex-col gap-3 lg:col-span-7">
+              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border pb-2">
+                <div className="flex items-center gap-2 text-sm font-semibold">
+                  <FileText className="size-4 text-primary" />
+                  <span>ورقة إجابة الطالب</span>
+                  <span dir="ltr" className="text-xs text-muted-foreground font-normal">
+                    ({activeSubmission?.fileName})
+                  </span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    className="size-8"
+                    onClick={() => setZoom((z) => Math.min(z + 0.25, 2.5))}
+                    title="تكبير"
+                  >
+                    <ZoomIn className="size-4" />
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    className="size-8"
+                    onClick={() => setZoom((z) => Math.max(z - 0.25, 0.5))}
+                    title="تصغير"
+                  >
+                    <ZoomOut className="size-4" />
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    className="size-8"
+                    onClick={() => setZoom(1)}
+                    title="إعادة ضبط الحجم"
+                  >
+                    <RotateCcw className="size-4" />
+                  </Button>
+                  <label className="inline-flex cursor-pointer">
+                    <Button variant="outline" size="sm" className="gap-1.5 text-xs" asChild>
+                      <span>
+                        <Camera className="size-3.5" />
+                        استبدال الورقة
+                      </span>
+                    </Button>
+                    <input
+                      type="file"
+                      className="sr-only"
+                      accept="image/*"
+                      capture="environment"
+                      multiple
+                      onChange={(e) => void replaceAnswerSheet(e.target.files)}
+                    />
+                  </label>
+                </div>
+              </div>
+
+              <div className="relative flex min-h-[380px] max-h-[520px] items-start justify-center overflow-auto rounded-lg border border-border bg-muted/20 p-3">
+                {isPreparingAnswerSheet ? (
+                  <div className="flex h-64 flex-col items-center justify-center gap-2 text-muted-foreground">
+                    <Loader2 className="size-8 animate-spin text-primary" />
+                    <p className="text-sm">جاري معالجة صورة الورقة...</p>
+                  </div>
+                ) : activeSubmission?.images && activeSubmission.images.length > 0 ? (
+                  <div className="space-y-4">
+                    {activeSubmission.images.map((img, idx) => (
+                      <div
+                        key={idx}
+                        className="overflow-hidden rounded-md border border-border shadow-sm transition-transform duration-150 ease-out"
+                        style={{
+                          transform: `scale(${zoom})`,
+                          transformOrigin: "top center",
+                        }}
+                      >
+                        <img
+                          src={img}
+                          alt={`ورقة الإجابة صفحة ${idx + 1}`}
+                          className="max-w-full object-contain"
+                        />
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="flex h-64 flex-col items-center justify-center gap-3 p-6 text-center text-muted-foreground">
+                    <AlertCircle className="size-10 text-muted-foreground/60" />
+                    <div>
+                      <p className="font-semibold text-foreground">لا توجد صور لورقة الإجابة بعد</p>
+                      <p className="mt-1 text-xs">
+                        يمكنك رفع صور بخط يد الطالب أو استخدام ورقة نموذجية لاختبار الوكيل الذكي.
+                      </p>
+                    </div>
+                    <div className="flex flex-wrap justify-center gap-2">
+                      <Button size="sm" onClick={attachSampleImage} variant="secondary">
+                        <Sparkles className="size-4" />
+                        إدراج ورقة إجابة نموذجية للتجربة
+                      </Button>
+                      <label className="cursor-pointer">
+                        <Button size="sm" variant="outline" asChild>
+                          <span>
+                            <Upload className="size-4" />
+                            رفع صورة من الجهاز
+                          </span>
+                        </Button>
+                        <input
+                          type="file"
+                          className="sr-only"
+                          accept="image/*"
+                          multiple
+                          onChange={(e) => void replaceAnswerSheet(e.target.files)}
+                        />
+                      </label>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* AI Grading & Evaluation Column (5 cols on lg) */}
+            <div className="flex flex-col gap-4 lg:col-span-5">
+              {/* Action buttons */}
+              <div className="space-y-2">
+                <div className="rounded-lg border border-primary/20 bg-primary/5 p-3.5">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <p className="text-sm font-bold text-foreground">وكيل التصحيح البصري</p>
+                      <p className="text-xs text-muted-foreground">
+                        يحلل خطوات الحل ويقترح النتيجة والملاحظات تلقائياً.
+                      </p>
+                    </div>
+                    <Button
+                      onClick={() => void autoGrade()}
+                      disabled={isGrading}
+                      className="gap-1.5 font-bold"
+                    >
+                      {isGrading ? (
+                        <>
+                          <Loader2 className="size-4 animate-spin" />
+                          جاري التصحيح...
+                        </>
+                      ) : (
+                        <>
+                          <Sparkles className="size-4" />
+                          بدء التصحيح الذكي
+                        </>
+                      )}
+                    </Button>
+                  </div>
+
+                  {isGrading && gradingProgress && (
+                    <div className="mt-3 flex items-center gap-2 rounded-md bg-background/80 p-2 text-xs font-medium text-primary">
+                      <Loader2 className="size-3.5 animate-spin" />
+                      <span>{gradingProgress.message}</span>
+                    </div>
+                  )}
+                </div>
+
+                {/* Gemini Web Action */}
+                <div className="flex items-center justify-between rounded-lg border border-border bg-card p-3">
+                  <div className="text-xs">
+                    <span className="font-semibold text-foreground">تصحيح عبر Gemini:</span>
+                    <span className="text-muted-foreground mr-1">
+                      نسخ الأمر المخصص وفتح الموقع.
+                    </span>
+                  </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => void copyGeminiWebPrompt()}
+                    className="gap-1.5 text-xs"
+                  >
+                    <ExternalLink className="size-3.5" />
+                    تصحيح عبر Gemini ✨
+                  </Button>
+                </div>
+              </div>
+
+              {/* AI Grading Report */}
+              {aiReport && (
+                <div className="rounded-lg border border-border bg-card p-4 space-y-3">
+                  <div className="flex items-center justify-between border-b border-border pb-2">
+                    <span className="text-sm font-bold flex items-center gap-1.5">
+                      <Sparkles className="size-4 text-primary" />
+                      تقرير وكيل التصحيح
+                    </span>
+                    <Badge variant="secondary" className="font-bold">
+                      العلامة المقترحة: {aiReport.score}/20
+                    </Badge>
+                  </div>
+
+                  <p className="text-xs text-muted-foreground leading-relaxed">
+                    {aiReport.summary}
+                  </p>
+
+                  <div className="space-y-2">
+                    <p className="text-xs font-bold text-foreground">تحليل خطوات الحل:</p>
+                    <div className="max-h-40 overflow-y-auto space-y-1.5 pr-1">
+                      {aiReport.stepByStepCorrection.map((step, idx) => (
+                        <div
+                          key={idx}
+                          className="flex items-start justify-between gap-2 rounded border border-border/60 bg-muted/30 p-2 text-xs"
+                        >
+                          <div className="space-y-0.5">
+                            <span className="font-bold text-foreground">{step.title}</span>
+                            <p className="text-muted-foreground">{step.note}</p>
+                          </div>
+                          <Badge
+                            variant={
+                              step.result === "correct"
+                                ? "default"
+                                : step.result === "needs-review"
+                                  ? "secondary"
+                                  : "destructive"
+                            }
+                            className="shrink-0 text-[10px]"
+                          >
+                            {step.result === "correct"
+                              ? "صحيح"
+                              : step.result === "needs-review"
+                                ? "مراجعة"
+                                : "خطأ"}
+                          </Badge>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Error or telemetry */}
+              {gradingError && (
+                <div className="rounded-lg border border-destructive/20 bg-destructive/10 p-3 text-xs space-y-2">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-1.5 font-bold text-destructive">
+                      <AlertCircle className="size-4" />
+                      <span>تنبيه الاتصال بالذكاء الاصطناعي</span>
+                    </div>
+                    {fallbackTelemetry && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => void copyTechnicalReport()}
+                        className="h-6 gap-1 text-[11px] text-destructive hover:bg-destructive/20"
+                      >
+                        <Copy className="size-3" />
+                        نسخ التقرير التقني
+                      </Button>
+                    )}
+                  </div>
+                  <p className="text-muted-foreground leading-relaxed">{gradingError}</p>
+                </div>
+              )}
+
+              {/* Final Grade Form */}
+              <div className="space-y-3 rounded-lg border border-border bg-card p-4">
+                <div className="space-y-1.5">
+                  <label className="text-xs font-bold text-foreground">
+                    العلامة المعتمدة (من 20)
+                  </label>
+                  <Input
+                    type="number"
+                    min={0}
+                    max={20}
+                    step={0.5}
+                    value={score}
+                    onChange={(e) => setScore(e.target.value)}
+                    placeholder="مثال: 17.5"
+                    className="font-bold text-base"
+                  />
+                </div>
+
+                <div className="space-y-1.5">
+                  <label className="text-xs font-bold text-foreground">
+                    ملاحظات وتوجيهات الأستاذ للطالب
+                  </label>
+                  <Textarea
+                    value={feedback}
+                    onChange={(e) => setFeedback(e.target.value)}
+                    placeholder="أدخل ملاحظاتك التوجيهية للطالب هنا..."
+                    rows={3}
+                    className="text-xs leading-relaxed"
+                  />
+                </div>
+
+                <div className="flex items-center justify-end gap-2 pt-2">
+                  <Button variant="outline" size="sm" onClick={() => setActiveSubmission(null)}>
+                    إلغاء
+                  </Button>
+                  <Button size="sm" onClick={saveGrade} className="gap-1.5 font-bold">
+                    <CheckCircle2 className="size-4" />
+                    اعتماد النتيجة
+                  </Button>
+                </div>
+              </div>
+            </div>
+          </div>
         </DialogContent>
       </Dialog>
     </div>
