@@ -15,7 +15,12 @@ type InteractiveWhiteboardProps = {
 };
 
 function WhiteboardPlaceholder() {
-  return <div className="min-h-[540px] animate-pulse border border-border bg-muted/40" aria-label="جارٍ تجهيز اللوح التفاعلي" />;
+  return (
+    <div
+      className="min-h-[540px] animate-pulse border border-border bg-muted/40"
+      aria-label="جارٍ تجهيز اللوح التفاعلي"
+    />
+  );
 }
 
 export function InteractiveWhiteboard(props: InteractiveWhiteboardProps) {

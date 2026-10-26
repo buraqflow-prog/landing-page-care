@@ -47,5 +47,9 @@ export function createWhiteboardSnapshot(): WhiteboardSnapshot {
 export function isWhiteboardSnapshot(value: unknown): value is WhiteboardSnapshot {
   if (!value || typeof value !== "object") return false;
   const candidate = value as Partial<WhiteboardSnapshot>;
-  return candidate.version === 2 && Array.isArray(candidate.pages) && typeof candidate.activePage === "number";
+  return (
+    candidate.version === 2 &&
+    Array.isArray(candidate.pages) &&
+    typeof candidate.activePage === "number"
+  );
 }

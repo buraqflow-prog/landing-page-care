@@ -1,0 +1,5 @@
+{
+  "name": "Extra Hours Hub",
+  "description": "منصة مراكز الساعات الإضافية والدعم عن بعد - Tutoring & Extra Hours Centers platform with live classroom, whiteboard, and AI grading.",
+  "capabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

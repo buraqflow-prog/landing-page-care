@@ -22,7 +22,10 @@ const imageDataUrlSchema = z
 
 const gradeInputSchema = z.object({
   exerciseTitle: z.string().trim().min(1).max(240),
-  studentImagesBase64: z.array(imageDataUrlSchema).min(1, "أضف صورة واحدة على الأقل لورقة الإجابة").max(6),
+  studentImagesBase64: z
+    .array(imageDataUrlSchema)
+    .min(1, "أضف صورة واحدة على الأقل لورقة الإجابة")
+    .max(6),
 });
 
 type GeminiModel = {
@@ -37,13 +40,19 @@ type GeminiResponse = {
   error?: { message?: string };
 };
 
-const gradingPrompt = (exerciseTitle: string) => `أنت أستاذ خبير ومصحح أكاديمي دقيق. صحّح حل الطالب في تمرين "${exerciseTitle}" من الصور المرفقة. حل الأسئلة علمياً أولاً ثم قارن الحل خطوة بخطوة. أرجع JSON صالحاً فقط بلا أي نص إضافي بهذا الشكل:
+const gradingPrompt = (
+  exerciseTitle: string,
+) => `أنت أستاذ خبير ومصحح أكاديمي دقيق. صحّح حل الطالب في تمرين "${exerciseTitle}" من الصور المرفقة. حل الأسئلة علمياً أولاً ثم قارن الحل خطوة بخطوة. أرجع JSON صالحاً فقط بلا أي نص إضافي بهذا الشكل:
 {"score":15,"summary":"...","stepByStepCorrection":[{"title":"السؤال 1","result":"correct أو needs-review أو incorrect","note":"..."}],"studentFeedback":"..."}`;
 
 function selectGeminiModel(models: GeminiModel[]) {
   const supported = models.filter((model) => {
     const name = model.name?.toLowerCase() ?? "";
-    return model.supportedGenerationMethods?.includes("generateContent") && !name.includes("tts") && !name.includes("image-generation");
+    return (
+      model.supportedGenerationMethods?.includes("generateContent") &&
+      !name.includes("tts") &&
+      !name.includes("image-generation")
+    );
   });
   const priorities = [
     (name: string) => name.includes("gemini-2.5-flash"),
@@ -60,19 +69,23 @@ function selectGeminiModel(models: GeminiModel[]) {
 }
 
 function normalizeResult(raw: unknown) {
-  const source = z.object({
-    score: z.coerce.number(),
-    summary: z.string(),
-    stepByStepCorrection: z.array(z.object({
-      title: z.string().optional(),
-      step: z.string().optional(),
-      result: z.enum(["correct", "needs-review", "incorrect"]).optional(),
-      status: z.enum(["correct", "needs-review", "incorrect"]).optional(),
-      note: z.string().optional(),
-      comment: z.string().optional(),
-    })),
-    studentFeedback: z.string(),
-  }).parse(raw);
+  const source = z
+    .object({
+      score: z.coerce.number(),
+      summary: z.string(),
+      stepByStepCorrection: z.array(
+        z.object({
+          title: z.string().optional(),
+          step: z.string().optional(),
+          result: z.enum(["correct", "needs-review", "incorrect"]).optional(),
+          status: z.enum(["correct", "needs-review", "incorrect"]).optional(),
+          note: z.string().optional(),
+          comment: z.string().optional(),
+        }),
+      ),
+      studentFeedback: z.string(),
+    })
+    .parse(raw);
 
   return gradeResultSchema.parse({
     score: source.score,
@@ -97,7 +110,9 @@ export const gradeSubmissionWithGemini = createServerFn({ method: "POST" })
       "x-goog-api-key": apiKey,
     };
 
-    const modelsResponse = await fetch("https://generativelanguage.googleapis.com/v1beta/models", { headers });
+    const modelsResponse = await fetch("https://generativelanguage.googleapis.com/v1beta/models", {
+      headers,
+    });
     if (!modelsResponse.ok) {
       console.error("Gemini model discovery failed", modelsResponse.status);
       throw new Error("تعذر التحقق من نموذج Gemini المتاح");
@@ -110,24 +125,32 @@ export const gradeSubmissionWithGemini = createServerFn({ method: "POST" })
     const parts = [
       { text: gradingPrompt(data.exerciseTitle) },
       ...data.studentImagesBase64.map((imageDataUrl) => {
-        const data = imageDataUrl.includes(",") ? imageDataUrl.split(",")[1] ?? "" : imageDataUrl;
+        const data = imageDataUrl.includes(",") ? (imageDataUrl.split(",")[1] ?? "") : imageDataUrl;
         const mimeType = imageDataUrl.match(/data:(.*?);base64/i)?.[1] || "image/jpeg";
         return { inlineData: { mimeType, data } };
       }),
     ];
 
-    const gradingResponse = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent`, {
-      method: "POST",
-      headers,
-      body: JSON.stringify({ contents: [{ role: "user", parts }] }),
-    });
+    const gradingResponse = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent`,
+      {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ contents: [{ role: "user", parts }] }),
+      },
+    );
     const payload = (await gradingResponse.json()) as GeminiResponse;
     if (!gradingResponse.ok) {
-      console.error("Gemini grading request failed", gradingResponse.status, payload.error?.message);
+      console.error(
+        "Gemini grading request failed",
+        gradingResponse.status,
+        payload.error?.message,
+      );
       throw new Error("تعذر إتمام التصحيح الذكي حالياً");
     }
 
-    const text = payload.candidates?.[0]?.content?.parts?.map((part) => part.text ?? "").join("\n") ?? "";
+    const text =
+      payload.candidates?.[0]?.content?.parts?.map((part) => part.text ?? "").join("\n") ?? "";
     const json = text.match(/\{[\s\S]*\}/)?.[0];
     if (!json) throw new Error("لم يُرجع Gemini تقرير تصحيح صالحاً");
 
