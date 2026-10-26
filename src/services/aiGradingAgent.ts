@@ -129,7 +129,7 @@ async function callAttempt(endpointUrl: string, token: string, body: unknown, ti
   const controller = new AbortController(); const timeout = abortAfter(controller, timeoutMs); const started = performance.now();
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   const url = getEndpointUrl(endpointUrl, token, auth === "query");
-  if (auth === "bearer") headers.Authorization = `Bearer ${token.trim()}`;
+  if (auth === "bearer") headers["Authorization"] = `Bearer ${token.trim()}`;
   if (auth === "google-header") headers["x-goog-api-key"] = token.trim();
   try {
     const response = await fetch(url, { method: "POST", headers, credentials: "omit", signal: controller.signal, body: JSON.stringify(body) });
