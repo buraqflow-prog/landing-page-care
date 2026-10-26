@@ -25,14 +25,13 @@ describe("AI grading connection resilience", () => {
     expect(window.sessionStorage.getItem("midada-ai-grading-connection")).toContain("gemini-2.0-flash:generateContent");
   });
 
-  it("uses bearer fallback after a rejected AQ query-key probe", async () => {
-    const fetchMock = vi.fn()
-      .mockResolvedValueOnce(new Response("denied", { status: 401, statusText: "Unauthorized" }))
-      .mockResolvedValueOnce(new Response('{"candidates":[{"content":{"parts":[{"text":"{\\"ok\\":true}"}]}}]}', { status: 200, headers: { "content-type": "application/json" } }));
+  it("uses the Google AI Studio key header with a clean endpoint for AQ tokens", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response('{"candidates":[{"content":{"parts":[{"text":"{\\"ok\\":true}"}]}}]}', { status: 200, headers: { "content-type": "application/json" } }));
     vi.stubGlobal("fetch", fetchMock);
     const result = await testVisionConnection({ apiToken: "AQ.token", endpointUrl: "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent" });
     expect(result.ok).toBe(true);
-    expect(fetchMock.mock.calls[1]?.[1]?.headers).toMatchObject({ Authorization: "Bearer AQ.token" });
+    expect(fetchMock.mock.calls[0]?.[0]).not.toContain("?key=");
+    expect(fetchMock.mock.calls[0]?.[1]?.headers).toMatchObject({ "X-goog-api-key": "AQ.token" });
   });
 
   it("returns a clear local continuity grade with the requested math steps", () => {
