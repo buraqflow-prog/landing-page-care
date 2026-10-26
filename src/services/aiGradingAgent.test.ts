@@ -34,6 +34,14 @@ describe("AI grading connection resilience", () => {
     expect(fetchMock.mock.calls[0]?.[1]?.headers).toMatchObject({ "X-goog-api-key": "AQ.token" });
   });
 
+  it("reports CORS or browser transport failures without exposing the API token", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new TypeError("Failed to fetch")));
+    const result = await testVisionConnection({ provider: "openai-compatible", modelId: "vision-model", apiToken: "private-teacher-token", endpointUrl: "https://provider.example/v1/chat/completions" });
+    expect(result.ok).toBe(false);
+    expect(result.telemetry).toContain("CORS");
+    expect(result.telemetry).not.toContain("private-teacher-token");
+  });
+
   it("formats compatible provider image grading with the selected model", () => {
     const body = buildOpenAICompatibleBody({ exerciseTitle: "رياضيات", modelId: "vision-model", studentImagesBase64: [] }, [{ mimeType: "image/jpeg", base64: "abc" }]);
     expect(body).toMatchObject({ model: "vision-model", response_format: { type: "json_object" } });

@@ -152,6 +152,41 @@ async function downscaleImage(mimeType: string, base64: string): Promise<CleanIm
 
 function telemetryLine(endpointUrl: string, payloadKb: number, label: string, elapsedMs: number) { return `URL: ${endpointUrl}\nPayload: ${payloadKb} KB\nResult: ${label}\nElapsed: ${elapsedMs} ms`; }
 
+function redactConnectionDetails(value: string, apiToken: string) {
+  const redactedToken = apiToken.trim();
+  return redactedToken ? value.replaceAll(redactedToken, "[REDACTED]") : value;
+}
+
+function displayEndpointUrl(endpointUrl: string, apiToken: string) {
+  try {
+    const parsed = new URL(endpointUrl);
+    parsed.search = "";
+    parsed.username = "";
+    parsed.password = "";
+    return redactConnectionDetails(parsed.toString(), apiToken);
+  } catch {
+    return redactConnectionDetails(endpointUrl, apiToken);
+  }
+}
+
+function diagnosticForHttpStatus(status: number, details: string) {
+  if (status === 401) return `خطأ مصادقة HTTP 401: المفتاح غير صالح أو مفقود. ${details}`;
+  if (status === 403) return `خطأ صلاحيات HTTP 403: تحقق من تفعيل الخدمة وصلاحية المفتاح لهذا النموذج. ${details}`;
+  if (status === 404) return `خطأ HTTP 404: الرابط أو اسم النموذج غير موجود. ${details}`;
+  if (status === 429) return `خطأ HTTP 429: تم تجاوز حد الاستخدام أو الطلبات. ${details}`;
+  if (status >= 500) return `خطأ من المزود HTTP ${status}: الخدمة مشغولة أو غير متاحة مؤقتاً. ${details}`;
+  return `خطأ HTTP ${status}: ${details}`;
+}
+
+function diagnosticForTransportFailure(error: unknown, timeoutMs: number) {
+  if (error instanceof DOMException && error.name === "AbortError") return `انتهت مهلة الاختبار بعد ${Math.ceil(timeoutMs / 1000)} ثوانٍ.`;
+  const detail = error instanceof Error ? error.message : "فشل طلب الشبكة";
+  if (error instanceof TypeError || /failed to fetch|networkerror/i.test(detail)) {
+    return `تعذر على المتصفح الوصول إلى المزود. غالباً يمنع المزود طلبات المتصفح (CORS)، أو يوجد حظر شبكة/عنوان غير صحيح. التفاصيل: ${detail}`;
+  }
+  return `فشل اتصال الشبكة: ${detail}`;
+}
+
 export function buildOpenAICompatibleBody(input: GradeSubmissionInput & { modelId: string }, images: CleanImage[]) {
   return {
     model: input.modelId,
@@ -182,23 +217,24 @@ async function requestVision(connection: CustomVisionConnectionSettings, body: u
   try {
     const attempt = await callAttempt(connection, body, timeoutMs);
     if (attempt.response.ok) return attempt;
-    const details = await responseError(attempt.response);
-    throw new VisionConnectionError(details, telemetryLine(attempt.endpointUrl, payloadKb, `HTTP ${attempt.response.status} — ${attempt.response.statusText || details}\n${details}`, attempt.elapsedMs));
+    const details = redactConnectionDetails(await responseError(attempt.response), connection.apiToken);
+    const diagnosis = diagnosticForHttpStatus(attempt.response.status, details);
+    throw new VisionConnectionError(diagnosis, telemetryLine(displayEndpointUrl(attempt.endpointUrl, connection.apiToken), payloadKb, diagnosis, attempt.elapsedMs));
   } catch (error) {
     if (error instanceof VisionConnectionError) throw error;
-    const message = error instanceof DOMException && error.name === "AbortError" ? `Timeout after ${timeoutMs}ms` : `${error instanceof Error ? error.name : "FetchError"}: ${error instanceof Error ? error.message : "unknown"}`;
-    throw new VisionConnectionError("تعذر الاتصال بوكيل التصحيح الخارجي. تأكد أن الرابط يسمح بطلبات المتصفح (CORS).", telemetryLine(connection.endpointUrl, payloadKb, message, timeoutMs));
+    const diagnosis = redactConnectionDetails(diagnosticForTransportFailure(error, timeoutMs), connection.apiToken);
+    throw new VisionConnectionError(diagnosis, telemetryLine(displayEndpointUrl(connection.endpointUrl, connection.apiToken), payloadKb, diagnosis, timeoutMs));
   }
 }
 
 /** Checks endpoint/model/auth compatibility without uploading a student's answer sheet. */
 export async function testVisionConnection(connection: CustomVisionConnectionSettings, timeoutMs = PROBE_TIMEOUT_MS): Promise<VisionConnectionResult> {
-  if (!connection.apiToken.trim()) return { ok: false, telemetry: "API Token is required before testing the connection." };
+  if (!connection.apiToken.trim()) return { ok: false, telemetry: "خطأ إعداد: أدخل API Token قبل اختبار الاتصال." };
   const safeConnection = sanitizeConnection(connection);
   const body = isOpenAICompatibleConnection(safeConnection) ? { model: safeConnection.modelId, temperature: 0.1, max_tokens: 32, response_format: { type: "json_object" }, messages: [{ role: "user", content: "Return exactly {\"ok\":true}." }] } : { contents: [{ role: "user", parts: [{ text: "Reply with {\"ok\":true} only." }] }], generationConfig: { temperature: 0.1, maxOutputTokens: 32, responseMimeType: "application/json" } };
   try {
     const result = await requestVision(safeConnection, body, timeoutMs, 0);
-    return { ok: true, endpointUrl: result.endpointUrl, telemetry: telemetryLine(result.endpointUrl, 0, `HTTP ${result.response.status}`, result.elapsedMs) };
+    return { ok: true, endpointUrl: result.endpointUrl, telemetry: telemetryLine(displayEndpointUrl(result.endpointUrl, safeConnection.apiToken), 0, `نجاح HTTP ${result.response.status}`, result.elapsedMs) };
   } catch (error) { return { ok: false, telemetry: error instanceof VisionConnectionError ? error.telemetry : "Connection probe failed." }; }
 }
 
