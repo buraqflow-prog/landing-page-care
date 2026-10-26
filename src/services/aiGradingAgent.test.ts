@@ -28,7 +28,7 @@ describe("AI grading connection resilience", () => {
   it("uses the Google AI Studio key header with a clean endpoint for AQ tokens", async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response('{"candidates":[{"content":{"parts":[{"text":"{\\"ok\\":true}"}]}}]}', { status: 200, headers: { "content-type": "application/json" } }));
     vi.stubGlobal("fetch", fetchMock);
-    const result = await testVisionConnection({ apiToken: "AQ.token", endpointUrl: "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent" });
+    const result = await testVisionConnection({ provider: "google-ai-studio", modelId: "gemini-2.0-flash", apiToken: "AQ.token", endpointUrl: "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent" });
     expect(result.ok).toBe(true);
     expect(fetchMock.mock.calls[0]?.[0]).not.toContain("?key=");
     expect(fetchMock.mock.calls[0]?.[1]?.headers).toMatchObject({ "X-goog-api-key": "AQ.token" });
