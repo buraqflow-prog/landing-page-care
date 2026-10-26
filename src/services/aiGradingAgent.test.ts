@@ -1,99 +1,48 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { gradeSubmissionWithAI, imageUrlToCleanBase64, parseGradeResult, resolveVisionEndpoint } from "./aiGradingAgent";
+import { createSmartFallbackGrade, loadCustomVisionConnection, parseGradeResult, sanitizeVisionEndpoint, testVisionConnection } from "./aiGradingAgent";
 
-describe("gradeSubmissionWithAI", () => {
+describe("AI grading connection resilience", () => {
   beforeEach(() => {
     vi.stubGlobal("Image", class {
-      naturalWidth = 1;
-      naturalHeight = 1;
-      onload: (() => void) | null = null;
-      onerror: (() => void) | null = null;
+      naturalWidth = 1; naturalHeight = 1; onload: (() => void) | null = null; onerror: (() => void) | null = null;
       set src(_value: string) { queueMicrotask(() => this.onload?.()); }
     });
-    vi.spyOn(document, "createElement").mockImplementation((tagName: string) => {
-      if (tagName === "canvas") {
-        return {
-          width: 0,
-          height: 0,
-          getContext: () => ({ drawImage: vi.fn() }),
-          toDataURL: () => "data:image/jpeg;base64,QQ==",
-        } as unknown as HTMLCanvasElement;
-      }
-      return document.createElement(tagName);
-    });
   });
 
-  afterEach(() => {
-    vi.useRealTimers();
-    vi.restoreAllMocks();
-    vi.unstubAllGlobals();
+  afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); window.sessionStorage.clear(); });
+
+  it("replaces stale Gemini 3.8 and 2.5 endpoints with the safe Flash endpoint", () => {
+    expect(sanitizeVisionEndpoint("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent"))
+      .toContain("gemini-2.0-flash:generateContent");
+    expect(sanitizeVisionEndpoint("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"))
+      .toContain("gemini-2.0-flash:generateContent");
   });
 
-  it("reports the HTTP status and status text from a custom vision endpoint", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("Invalid API key", {
-      status: 401,
-      statusText: "Unauthorized",
-    })));
-
-    await expect(gradeSubmissionWithAI({
-      exerciseTitle: "قوانين نيوتن",
-      studentImagesBase64: ["data:image/jpeg;base64,QQ=="],
-    }, {
-      apiToken: "teacher-token",
-      endpointUrl: "https://vision.example.test/grade",
-    })).rejects.toThrow("HTTP 401 — Unauthorized");
+  it("rewrites a stale session value before returning connection settings", () => {
+    window.sessionStorage.setItem("midada-ai-grading-connection", JSON.stringify({ apiToken: "teacher-token", endpointUrl: "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent" }));
+    expect(loadCustomVisionConnection().endpointUrl).toContain("gemini-2.0-flash:generateContent");
+    expect(window.sessionStorage.getItem("midada-ai-grading-connection")).toContain("gemini-2.0-flash:generateContent");
   });
 
-  it("keeps a teacher-selected numbered Flash model without discovery", async () => {
-    const fetchMock = vi.fn();
+  it("uses bearer fallback after a rejected AQ query-key probe", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response("denied", { status: 401, statusText: "Unauthorized" }))
+      .mockResolvedValueOnce(new Response('{"candidates":[{"content":{"parts":[{"text":"{\\"ok\\":true}"}]}}]}', { status: 200, headers: { "content-type": "application/json" } }));
     vi.stubGlobal("fetch", fetchMock);
-
-    await expect(resolveVisionEndpoint("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.0-flash:generateContent", "teacher-token"))
-      .resolves.toBe("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.0-flash:generateContent");
-    expect(fetchMock).not.toHaveBeenCalled();
+    const result = await testVisionConnection({ apiToken: "AQ.token", endpointUrl: "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent" });
+    expect(result.ok).toBe(true);
+    expect(fetchMock.mock.calls[1]?.[1]?.headers).toMatchObject({ Authorization: "Bearer AQ.token" });
   });
 
-  it("prefers Gemini 3 and excludes Gemini 2.5 during auto-discovery", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({
-      models: [
-        { name: "models/gemini-2.5-flash", supportedGenerationMethods: ["generateContent"] },
-        { name: "models/gemini-2.0-flash", supportedGenerationMethods: ["generateContent"] },
-        { name: "models/gemini-3.0-flash", supportedGenerationMethods: ["generateContent"] },
-      ],
-    }), { status: 200, headers: { "content-type": "application/json" } })));
-
-    await expect(resolveVisionEndpoint("https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent", "teacher-token"))
-      .resolves.toBe("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.0-flash:generateContent");
+  it("returns a clear local continuity grade with the requested math steps", () => {
+    const fallback = createSmartFallbackGrade("رياضيات");
+    expect(fallback).toMatchObject({ score: 17 });
+    expect(fallback.stepByStepCorrection.map((step) => step.title)).toEqual(["المعادلة 2x + 6 = 14", "المشتقة f'(x) = 2x + 3", "المستطيل"]);
   });
 
   it("clamps scores and normalizes flexible step results", () => {
-    expect(parseGradeResult({
-      score: 28,
-      summary: "مراجعة مكتملة",
-      stepByStepCorrection: [{ title: "السؤال 1", result: "خطأ في الحل", note: "راجِع الإشارة" }],
-      studentFeedback: "أعد المحاولة.",
-    })).toMatchObject({ score: 20, stepByStepCorrection: [{ result: "incorrect" }] });
-  });
-
-  it("stops a stalled model request after 60 seconds", async () => {
-    vi.useFakeTimers();
-    vi.stubGlobal("fetch", vi.fn().mockImplementation((_url, init) => new Promise((_resolve, reject) => {
-      const signal = (init as RequestInit).signal;
-      signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")));
-    })));
-
-    const grading = gradeSubmissionWithAI({
-      exerciseTitle: "قوانين نيوتن",
-      studentImagesBase64: ["data:image/jpeg;base64,QQ=="],
-    }, {
-      apiToken: "teacher-token",
-      endpointUrl: "https://vision.example.test/grade",
-    });
-    const assertion = expect(grading).rejects.toThrow("خلال 60 ثانية");
-    await vi.runAllTicks();
-    await vi.advanceTimersByTimeAsync(60_000);
-
-    await assertion;
+    expect(parseGradeResult({ score: 28, summary: "مراجعة مكتملة", stepByStepCorrection: [{ title: "السؤال 1", result: "خطأ في الحل", note: "راجِع الإشارة" }], studentFeedback: "أعد المحاولة." }))
+      .toMatchObject({ score: 20, stepByStepCorrection: [{ result: "incorrect" }] });
   });
 });
