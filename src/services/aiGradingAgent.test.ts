@@ -12,27 +12,26 @@ describe("AI grading connection resilience", () => {
 
   afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); window.sessionStorage.clear(); });
 
-  it("replaces stale Gemini 3.8 and 2.5 endpoints with the safe Flash endpoint", () => {
+  it("replaces stale Gemini 3.8 and 2.5 endpoints with the latest Flash endpoint", () => {
     expect(sanitizeVisionEndpoint("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent"))
-      .toContain("gemini-2.0-flash:generateContent");
+      .toContain("gemini-flash-latest:generateContent");
     expect(sanitizeVisionEndpoint("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"))
-      .toContain("gemini-2.0-flash:generateContent");
+      .toContain("gemini-flash-latest:generateContent");
   });
 
   it("rewrites a stale session value before returning connection settings", () => {
     window.sessionStorage.setItem("midada-ai-grading-connection", JSON.stringify({ apiToken: "teacher-token", endpointUrl: "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent" }));
-    expect(loadCustomVisionConnection().endpointUrl).toContain("gemini-2.0-flash:generateContent");
-    expect(window.sessionStorage.getItem("midada-ai-grading-connection")).toContain("gemini-2.0-flash:generateContent");
+    expect(loadCustomVisionConnection().endpointUrl).toContain("gemini-flash-latest:generateContent");
+    expect(window.sessionStorage.getItem("midada-ai-grading-connection")).toContain("gemini-flash-latest:generateContent");
   });
 
-  it("uses bearer fallback after a rejected AQ query-key probe", async () => {
-    const fetchMock = vi.fn()
-      .mockResolvedValueOnce(new Response("denied", { status: 401, statusText: "Unauthorized" }))
-      .mockResolvedValueOnce(new Response('{"candidates":[{"content":{"parts":[{"text":"{\\"ok\\":true}"}]}}]}', { status: 200, headers: { "content-type": "application/json" } }));
+  it("uses the Google AI Studio key header with a clean endpoint for AQ tokens", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response('{"candidates":[{"content":{"parts":[{"text":"{\\"ok\\":true}"}]}}]}', { status: 200, headers: { "content-type": "application/json" } }));
     vi.stubGlobal("fetch", fetchMock);
     const result = await testVisionConnection({ apiToken: "AQ.token", endpointUrl: "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent" });
     expect(result.ok).toBe(true);
-    expect(fetchMock.mock.calls[1]?.[1]?.headers).toMatchObject({ Authorization: "Bearer AQ.token" });
+    expect(fetchMock.mock.calls[0]?.[0]).not.toContain("?key=");
+    expect(fetchMock.mock.calls[0]?.[1]?.headers).toMatchObject({ "X-goog-api-key": "AQ.token" });
   });
 
   it("returns a clear local continuity grade with the requested math steps", () => {

@@ -26,15 +26,15 @@ const GOOGLE_BASE = "https://generativelanguage.googleapis.com/v1beta/models";
 const GOOGLE_MODELS = ["gemini-2.0-flash", "gemini-3.0-flash", "gemini-1.5-flash", "gemini-flash-latest"];
 const PROBE_TIMEOUT_MS = 3_000;
 const AUTO_PROBE_TIMEOUT_MS = 8_000;
-const GENERATE_CONTENT_TIMEOUT_MS = 15_000;
+const GENERATE_CONTENT_TIMEOUT_MS = 30_000;
 
 export const defaultCustomVisionConnection: CustomVisionConnectionSettings = {
   apiToken: "",
-  endpointUrl: `${GOOGLE_BASE}/gemini-2.0-flash:generateContent`,
+  endpointUrl: `${GOOGLE_BASE}/gemini-flash-latest:generateContent`,
 };
 
 type CleanImage = { base64: string; mimeType: string };
-type AttemptResult = { response: Response; endpointUrl: string; elapsedMs: number; auth: "query" | "bearer" | "google-header" };
+type AttemptResult = { response: Response; endpointUrl: string; elapsedMs: number };
 
 class VisionConnectionError extends Error {
   constructor(message: string, readonly telemetry: string) { super(message); }
@@ -109,31 +109,15 @@ async function downscaleImage(mimeType: string, base64: string): Promise<CleanIm
   } catch { return fallback; }
 }
 
-function getEndpointUrl(endpointUrl: string, token: string, includeKey = true) {
-  const parsed = new URL(sanitizeVisionEndpoint(endpointUrl));
-  if (includeKey) parsed.searchParams.set("key", token.trim());
-  return parsed.toString();
-}
-
-function candidateEndpoints(endpointUrl: string) {
-  const clean = sanitizeVisionEndpoint(endpointUrl);
-  if (!isGoogleGenerateContentEndpoint(clean)) return [clean];
-  const requested = new URL(clean).pathname.split("/").pop()?.replace(":generateContent", "");
-  const models = [...new Set([requested, ...GOOGLE_MODELS].filter(Boolean))];
-  return models.map((model) => `${GOOGLE_BASE}/${model}:generateContent`);
-}
-
 function telemetryLine(endpointUrl: string, payloadKb: number, label: string, elapsedMs: number) { return `URL: ${endpointUrl}\nPayload: ${payloadKb} KB\nResult: ${label}\nElapsed: ${elapsedMs} ms`; }
 
-async function callAttempt(endpointUrl: string, token: string, body: unknown, timeoutMs: number, auth: AttemptResult["auth"]): Promise<AttemptResult> {
+async function callAttempt(endpointUrl: string, token: string, body: unknown, timeoutMs: number): Promise<AttemptResult> {
   const controller = new AbortController(); const timeout = abortAfter(controller, timeoutMs); const started = performance.now();
-  const headers: Record<string, string> = { "Content-Type": "application/json" };
-  const url = getEndpointUrl(endpointUrl, token, auth === "query");
-  if (auth === "bearer") headers["Authorization"] = `Bearer ${token.trim()}`;
-  if (auth === "google-header") headers["x-goog-api-key"] = token.trim();
+  const url = sanitizeVisionEndpoint(endpointUrl);
+  const headers = { "Content-Type": "application/json", "X-goog-api-key": token.trim() };
   try {
     const response = await fetch(url, { method: "POST", headers, credentials: "omit", signal: controller.signal, body: JSON.stringify(body) });
-    return { response, endpointUrl: url, elapsedMs: Math.round(performance.now() - started), auth };
+    return { response, endpointUrl: url, elapsedMs: Math.round(performance.now() - started) };
   } finally { window.clearTimeout(timeout); }
 }
 
@@ -144,24 +128,16 @@ async function responseError(response: Response) {
 }
 
 async function requestVision(endpointUrl: string, token: string, body: unknown, timeoutMs: number, payloadKb: number) {
-  const auths: AttemptResult["auth"][] = token.trim().startsWith("AQ.") ? ["query", "bearer", "google-header"] : ["query"];
-  let latest = "";
-  for (const endpoint of candidateEndpoints(endpointUrl)) {
-    for (const auth of auths) {
-      try {
-        const attempt = await callAttempt(endpoint, token, body, timeoutMs, auth);
-        if (attempt.response.ok) return attempt;
-        const details = await responseError(attempt.response);
-        latest = telemetryLine(attempt.endpointUrl, payloadKb, `HTTP ${attempt.response.status} — ${attempt.response.statusText || details} (${auth})`, attempt.elapsedMs);
-        if (!(token.trim().startsWith("AQ.") && [401, 403].includes(attempt.response.status))) break;
-      } catch (error) {
-        const message = error instanceof DOMException && error.name === "AbortError" ? `Timeout after ${timeoutMs}ms` : `${error instanceof Error ? error.name : "FetchError"}: ${error instanceof Error ? error.message : "unknown"}`;
-        latest = telemetryLine(getEndpointUrl(endpoint, token), payloadKb, message, timeoutMs);
-        break;
-      }
-    }
+  try {
+    const attempt = await callAttempt(endpointUrl, token, body, timeoutMs);
+    if (attempt.response.ok) return attempt;
+    const details = await responseError(attempt.response);
+    throw new VisionConnectionError(details, telemetryLine(attempt.endpointUrl, payloadKb, `HTTP ${attempt.response.status} — ${attempt.response.statusText || details}\n${details}`, attempt.elapsedMs));
+  } catch (error) {
+    if (error instanceof VisionConnectionError) throw error;
+    const message = error instanceof DOMException && error.name === "AbortError" ? `Timeout after ${timeoutMs}ms` : `${error instanceof Error ? error.name : "FetchError"}: ${error instanceof Error ? error.message : "unknown"}`;
+    throw new VisionConnectionError("تعذر الاتصال بوكيل التصحيح الخارجي", telemetryLine(sanitizeVisionEndpoint(endpointUrl), payloadKb, message, timeoutMs));
   }
-  throw new VisionConnectionError("تعذر الاتصال بوكيل التصحيح الخارجي", latest || "لا تتوفر بيانات اتصال.");
 }
 
 /** Checks endpoint/model/auth compatibility without uploading a student's answer sheet. */
@@ -170,14 +146,14 @@ export async function testVisionConnection(connection: CustomVisionConnectionSet
   const body = { contents: [{ role: "user", parts: [{ text: "Reply with {\"ok\":true} only." }] }], generationConfig: { temperature: 0.1, responseMimeType: "application/json" } };
   try {
     const result = await requestVision(connection.endpointUrl, connection.apiToken, body, timeoutMs, 0);
-    return { ok: true, endpointUrl: result.endpointUrl, telemetry: telemetryLine(result.endpointUrl, 0, `HTTP ${result.response.status} (${result.auth})`, result.elapsedMs) };
+    return { ok: true, endpointUrl: result.endpointUrl, telemetry: telemetryLine(result.endpointUrl, 0, `HTTP ${result.response.status}`, result.elapsedMs) };
   } catch (error) { return { ok: false, telemetry: error instanceof VisionConnectionError ? error.telemetry : "Connection probe failed." }; }
 }
 
 /** Finds an accessible endpoint through the lightweight probe rather than trusting a stale stored model. */
 export async function resolveVisionEndpoint(endpointUrl: string, apiToken: string): Promise<string> {
   const probe = await testVisionConnection({ endpointUrl, apiToken }, 5_000);
-  return probe.endpointUrl ? probe.endpointUrl.replace(/[?&]key=[^&]+/, "").replace(/[?&]$/, "") : sanitizeVisionEndpoint(endpointUrl);
+  return probe.endpointUrl || sanitizeVisionEndpoint(endpointUrl);
 }
 
 export function loadCustomVisionConnection(): CustomVisionConnectionSettings {
@@ -227,7 +203,7 @@ export async function gradeSubmissionWithAI(input: GradeSubmissionInput, connect
   const probe = await testVisionConnection(connection, AUTO_PROBE_TIMEOUT_MS);
   if (!probe.ok) throw new VisionConnectionError("فشل الفحص السريع قبل إرسال ورقة الطالب", probe.telemetry);
   onProgress?.({ stage: 2, message: "2/3 جاري إرسال الورقة إلى Gemini وتحليل الخط..." });
-  const body = { contents: [{ role: "user", parts: [{ text: gradingPrompt(input.exerciseTitle) }, ...cleanImages.map((image) => ({ inlineData: { mimeType: image.mimeType, data: image.base64 } }))] }], generationConfig: { temperature: 0.1, responseMimeType: "application/json" } };
+  const body = { contents: [{ parts: [{ text: gradingPrompt(input.exerciseTitle) }, ...cleanImages.map((image) => ({ inline_data: { mime_type: image.mimeType, data: image.base64 } }))] }] };
   const result = await requestVision(probe.endpointUrl || connection.endpointUrl, connection.apiToken, body, GENERATE_CONTENT_TIMEOUT_MS, payloadKb);
   if (!result.response.headers.get("content-type")?.includes("application/json")) throw new VisionConnectionError("أعاد الوكيل استجابة غير متوقعة بدلاً من JSON", telemetryLine(result.endpointUrl, payloadKb, "Unexpected response content type", result.elapsedMs));
   const payload = await result.response.json() as { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> };
