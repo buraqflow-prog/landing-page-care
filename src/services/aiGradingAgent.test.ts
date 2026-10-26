@@ -12,17 +12,17 @@ describe("AI grading connection resilience", () => {
 
   afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); window.sessionStorage.clear(); });
 
-  it("replaces stale Gemini 3.8 and 2.5 endpoints with the safe Flash endpoint", () => {
+  it("replaces stale Gemini 3.8 and 2.5 endpoints with the latest Flash endpoint", () => {
     expect(sanitizeVisionEndpoint("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent"))
-      .toContain("gemini-2.0-flash:generateContent");
+      .toContain("gemini-flash-latest:generateContent");
     expect(sanitizeVisionEndpoint("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"))
-      .toContain("gemini-2.0-flash:generateContent");
+      .toContain("gemini-flash-latest:generateContent");
   });
 
   it("rewrites a stale session value before returning connection settings", () => {
     window.sessionStorage.setItem("midada-ai-grading-connection", JSON.stringify({ apiToken: "teacher-token", endpointUrl: "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent" }));
-    expect(loadCustomVisionConnection().endpointUrl).toContain("gemini-2.0-flash:generateContent");
-    expect(window.sessionStorage.getItem("midada-ai-grading-connection")).toContain("gemini-2.0-flash:generateContent");
+    expect(loadCustomVisionConnection().endpointUrl).toContain("gemini-flash-latest:generateContent");
+    expect(window.sessionStorage.getItem("midada-ai-grading-connection")).toContain("gemini-flash-latest:generateContent");
   });
 
   it("uses the Google AI Studio key header with a clean endpoint for AQ tokens", async () => {
